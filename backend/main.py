@@ -54,20 +54,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow Next.js dev server and production origins
-_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-]
-_frontend_url = os.getenv("FRONTEND_URL")
-if _frontend_url:
-    _origins.append(_frontend_url)
-
+# CORS — allow all origins (public chatbot API)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
