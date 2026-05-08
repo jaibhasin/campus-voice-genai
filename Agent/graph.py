@@ -40,7 +40,7 @@ class Agent():
     def __init__(
         self,
         name: str,
-        model: str = "openai/gpt-4o-mini",
+        model: str = "openai/gpt-4.1-mini",
         system_prompt: str = college_assistant_system_prompt,
         temperature: float = 0.5,
     ):
