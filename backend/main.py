@@ -7,6 +7,7 @@ Run from project root:
     uvicorn backend.main:app --reload --port 8000
 """
 
+import os
 import sys
 import json
 import uuid
@@ -54,13 +55,18 @@ app = FastAPI(
 )
 
 # CORS — allow Next.js dev server and production origins
+_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+]
+_frontend_url = os.getenv("FRONTEND_URL")
+if _frontend_url:
+    _origins.append(_frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-    ],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
