@@ -16,6 +16,7 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.15.11",
     "eslint": "^9.27.0",
     "eslint-config-next": "^15.3.2"
   }
