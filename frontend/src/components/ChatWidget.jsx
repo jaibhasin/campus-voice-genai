@@ -5,6 +5,17 @@ import { motion, AnimatePresence } from "framer-motion";
 import MessageBubble from "./MessageBubble";
 import ThinkingState from "./ThinkingState";
 
+const PEEK_MESSAGES = [
+  { text: "🎓 Take admission into <strong>Thapar</strong> — shape your future!" },
+  { text: "🏛️ Wow, such an <strong>amazing campus life</strong> at TIET!" },
+  { text: "🚀 Did you know? TIET alumni work at <strong>Google, Microsoft & Amazon</strong>!" },
+  { text: "🌍 <strong>25+ international</strong> university collaborations await you!" },
+  { text: "💡 Got questions about <strong>fees or hostel</strong>? Just ask me!" },
+  { text: "🏆 TIET is in <strong>India's Top 30</strong> engineering institutes!" },
+  { text: "📚 <strong>250 acres</strong> of campus with world-class facilities!" },
+  { text: "🤝 Join the <strong>60,000+</strong> strong alumni network!" },
+];
+
 export default function ChatWidget({
   messages,
   onSend,
@@ -17,7 +28,12 @@ export default function ChatWidget({
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Check if agent is "thinking" (streaming but no content yet)
+  // Peeking robot state — shows after 8s of inactivity
+  const [showPeek, setShowPeek] = useState(false);
+  const [peekMsgIndex, setPeekMsgIndex] = useState(0);
+  const idleTimerRef = useRef(null);
+
+  // Check if agent is "thinking"
   const lastMsg = messages[messages.length - 1];
   const isThinking =
     isStreaming &&
@@ -25,7 +41,7 @@ export default function ChatWidget({
     lastMsg?.isStreaming &&
     !lastMsg?.content;
 
-  // Auto-scroll to bottom
+  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
@@ -37,15 +53,50 @@ export default function ChatWidget({
     }
   }, [isOpen]);
 
+  // Idle timer — show peeking robot after 8s of no new messages
+  useEffect(() => {
+    if (!isOpen || isStreaming) {
+      setShowPeek(false);
+      return;
+    }
+
+    // Only trigger if there are messages (conversation happened)
+    if (messages.length === 0) {
+      setShowPeek(false);
+      return;
+    }
+
+    clearTimeout(idleTimerRef.current);
+    setShowPeek(false);
+
+    idleTimerRef.current = setTimeout(() => {
+      setShowPeek(true);
+      setPeekMsgIndex(Math.floor(Math.random() * PEEK_MESSAGES.length));
+    }, 8000);
+
+    return () => clearTimeout(idleTimerRef.current);
+  }, [messages, isOpen, isStreaming]);
+
+  // Rotate peek messages every 5s
+  useEffect(() => {
+    if (!showPeek) return;
+    const interval = setInterval(() => {
+      setPeekMsgIndex((prev) => (prev + 1) % PEEK_MESSAGES.length);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [showPeek]);
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!input.trim() || isStreaming) return;
     onSend(input.trim());
     setInput("");
+    setShowPeek(false);
   };
 
   const handleOptionClick = (option) => {
     onSend(option);
+    setShowPeek(false);
   };
 
   return (
@@ -169,6 +220,57 @@ export default function ChatWidget({
                 </button>
               </form>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Peeking Robot — separate overlay outside chat panel */}
+      <AnimatePresence>
+        {isOpen && showPeek && (
+          <motion.div
+            className="peek-robot-wrapper"
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 20, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+          >
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={peekMsgIndex}
+                className="peek-speech-bubble"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                transition={{ duration: 0.3 }}
+              >
+                <span
+                  className="peek-speech-text"
+                  dangerouslySetInnerHTML={{
+                    __html: PEEK_MESSAGES[peekMsgIndex].text,
+                  }}
+                />
+              </motion.div>
+            </AnimatePresence>
+
+            <motion.div
+              className="peek-robot-body"
+              animate={{ y: [0, -3, 0] }}
+              transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+            >
+              <div className="peek-head">
+                <div className="peek-antenna">
+                  <div className="peek-antenna-orb" />
+                </div>
+                <div className="peek-visor">
+                  <div className="peek-eye" />
+                  <div className="peek-eye" />
+                </div>
+              </div>
+              <div className="peek-hands">
+                <div className="peek-hand" />
+                <div className="peek-hand" />
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

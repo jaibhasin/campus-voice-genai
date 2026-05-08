@@ -307,11 +307,13 @@ html, body {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   scroll-behavior: smooth;
+  min-width: 0;
 }
 
 .chat-messages::-webkit-scrollbar {
@@ -359,6 +361,7 @@ html, body {
   display: flex;
   gap: 10px;
   max-width: 92%;
+  min-width: 0;
 }
 
 .message.user {
@@ -397,6 +400,11 @@ html, body {
   border-radius: var(--radius-lg);
   line-height: 1.55;
   font-size: 13.5px;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: break-word;
+  hyphens: auto;
 }
 
 .message.user .message-content {
@@ -786,7 +794,7 @@ html, body {
 
   .chat-panel {
     width: calc(100vw - 16px);
-    height: calc(100vh - 80px);
+    height: calc(100vh - 120px);
     bottom: 8px;
     right: 8px;
     border-radius: var(--radius-lg);
@@ -809,9 +817,181 @@ html, body {
 
   .chat-panel {
     width: 100vw;
-    height: calc(100vh - 60px);
+    height: calc(100vh - 110px);
     bottom: 0;
     right: 0;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
 }
+
+/* ═══════════════════════════════════════
+   Peeking Robot Mascot
+   ═══════════════════════════════════════ */
+.peek-robot-wrapper {
+  position: fixed;
+  /* Dynamically positioned above the chat panel */
+  --panel-bottom: 28px;
+  --panel-height: 600px;
+  --panel-right: 28px;
+  --panel-width: 420px;
+  bottom: calc(var(--panel-bottom) + var(--panel-height) + 4px);
+  right: var(--panel-right);
+  width: var(--panel-width);
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.peek-speech-bubble {
+  position: relative;
+  background: var(--bg-white);
+  border: 1px solid var(--border-orange);
+  border-radius: 12px;
+  padding: 8px 14px;
+  margin-bottom: 4px;
+  box-shadow: var(--shadow-md);
+  max-width: 220px;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.peek-speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+  background: var(--bg-white);
+  border-right: 1px solid var(--border-orange);
+  border-bottom: 1px solid var(--border-orange);
+}
+
+.peek-speech-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.peek-speech-text strong {
+  color: var(--orange-600);
+  font-weight: 700;
+}
+
+.peek-robot-body {
+  position: relative;
+  width: 44px;
+  height: 30px;
+  pointer-events: auto;
+}
+
+/* Peeking Robot head — visible part */
+.peek-head {
+  width: 44px;
+  height: 30px;
+  background: linear-gradient(135deg, var(--orange-400), var(--orange-500));
+  border-radius: 12px 12px 4px 4px;
+  position: relative;
+  box-shadow: 0 3px 10px rgba(249, 115, 22, 0.2);
+}
+
+.peek-visor {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 32px;
+  height: 14px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.peek-eye {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
+  animation: eyeBlink 4s ease-in-out infinite;
+}
+
+/* Antenna on peeking robot */
+.peek-antenna {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.peek-antenna::before {
+  content: '';
+  width: 2px;
+  height: 6px;
+  background: var(--orange-400);
+  border-radius: 1px;
+}
+
+.peek-antenna-orb {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--orange-400);
+  box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+  animation: orbPulse 2s ease-in-out infinite;
+  margin-top: -1px;
+}
+
+/* Hands gripping the edge */
+.peek-hands {
+  position: absolute;
+  bottom: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 22px;
+}
+
+.peek-hand {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--orange-300);
+  border: 1px solid var(--orange-400);
+}
+
+/* ── Responsive: sync robot with chat panel ── */
+@media (max-width: 768px) {
+  .peek-robot-wrapper {
+    --panel-bottom: 8px;
+    --panel-height: calc(100vh - 120px);
+    --panel-right: 8px;
+    --panel-width: calc(100vw - 16px);
+  }
+
+  .peek-speech-bubble {
+    max-width: 200px;
+    padding: 6px 12px;
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 480px) {
+  .peek-robot-wrapper {
+    --panel-bottom: 0px;
+    --panel-height: calc(100vh - 110px);
+    --panel-right: 0px;
+    --panel-width: 100vw;
+  }
+}
+
