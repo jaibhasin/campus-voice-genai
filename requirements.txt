@@ -1,14 +1,20 @@
-# Tiet Chat Bot Dependencies
+# ──────────────────────────────────────────────
+#  Scout — TIET Chat Bot Dependencies
+# ──────────────────────────────────────────────
 
 # Core agent framework
 langgraph
 langchain-core
+langchain-openai
+
+# LLM / HuggingFace (used by local indexer)
+huggingface-hub
 langchain-huggingface
 
-# LLM / HuggingFace
-huggingface-hub
+# PageIndex cloud SDK (used by cloud_index.py)
+pageindex
 
-# PageIndex local dependencies (replaces cloud `pageindex` package)
+# PageIndex local dependencies (used by index_docs.py)
 litellm>=1.83.0
 pymupdf>=1.26.0
 PyPDF2>=3.0.1
@@ -20,11 +26,10 @@ python-dotenv>=1.0.1
 # Data validation
 pydantic
 
-# Frontend
+# Streamlit frontend (legacy)
 streamlit
 
-# API backend
+# FastAPI backend
 fastapi
 uvicorn[standard]
 python-multipart
-langchain-openai

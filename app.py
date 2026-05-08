@@ -1,7 +1,10 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from Agent.graph import Agent
 import uuid
 import re
+import json
+from pathlib import Path
 
 # ──────────────────────────────────────────────────
 #  Page config
@@ -63,9 +66,26 @@ st.markdown("""
 }
 
 /* ── Hide default Streamlit branding ── */
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
-header { visibility: hidden; }
+#MainMenu { display: none !important; }
+footer { display: none !important; }
+
+/* Hide header background but keep sidebar toggle visible */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 0 !important;
+    overflow: visible !important;
+}
+
+/* Ensure sidebar toggle button is always clickable */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"],
+button[kind="headerNoPadding"] {
+    visibility: visible !important;
+    z-index: 999 !important;
+    position: fixed !important;
+    top: 8px !important;
+    left: 8px !important;
+}
 
 /* ── Chat message styling ── */
 .stChatMessage {
@@ -250,6 +270,11 @@ def parse_options(text: str):
     return clean_text, options
 
 
+def _set_pending(question: str):
+    """Callback for option/quick-question buttons — sets the pending question."""
+    st.session_state.pending_question = question
+
+
 # ──────────────────────────────────────────────────
 #  Session state initialisation
 # ──────────────────────────────────────────────────
@@ -297,8 +322,13 @@ with st.sidebar:
         "What are the hostel charges?",
     ]
     for q in quick_questions:
-        if st.button(q, key=f"qq_{q}", use_container_width=True):
-            st.session_state.pending_question = q
+        st.button(
+            q,
+            key=f"qq_{q}",
+            use_container_width=True,
+            on_click=_set_pending,
+            args=(q,),
+        )
 
     st.markdown('<div class="glow-divider"></div>', unsafe_allow_html=True)
 
@@ -358,12 +388,13 @@ for idx, msg in enumerate(st.session_state.messages):
             cols = st.columns(min(len(options), 3))
             for i, opt in enumerate(options):
                 col = cols[i % min(len(options), 3)]
-                if col.button(
+                col.button(
                     f"👉 {opt}",
                     key=f"opt_{idx}_{i}",
                     use_container_width=True,
-                ):
-                    st.session_state.pending_question = opt
+                    on_click=_set_pending,
+                    args=(opt,),
+                )
 
 # ──────────────────────────────────────────────────
 #  Handle input (typed or sidebar quick-question)
@@ -387,6 +418,312 @@ if user_input:
         full_content = ""
         tool_expander = None
         text_placeholder = st.empty()
+        thinking_cleared = False
+
+        # Load facts from JSON
+        facts_path = Path(__file__).parent / "thaparfacts.json"
+        with open(facts_path, "r", encoding="utf-8") as f:
+            thapar_facts = json.load(f)
+        facts_json = json.dumps(thapar_facts)
+        first_emoji = thapar_facts[0]["emoji"] if thapar_facts else "🎓"
+        first_text = thapar_facts[0]["text"] if thapar_facts else "Loading..."
+
+        # Show thinking animation with 3D avatar + Thapar facts
+        thinking_html = """
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+            <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: transparent; }
+
+            .thinking-container {
+                font-family: 'Inter', sans-serif;
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 20px;
+                padding: 12px 16px;
+            }
+
+            /* Left: 3D avatar */
+            .avatar-side {
+                flex-shrink: 0;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }
+
+            #avatar-canvas {
+                width: 140px;
+                height: 140px;
+                border-radius: 50%;
+                cursor: grab;
+            }
+            #avatar-canvas:active { cursor: grabbing; }
+
+            /* Right: status + facts */
+            .info-side {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                min-width: 0;
+            }
+
+            .thinking-label {
+                font-size: 14px;
+                font-weight: 700;
+                color: #60a5fa;
+                margin-bottom: 6px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .dot-pulse {
+                display: flex;
+                gap: 4px;
+            }
+            .dot-pulse span {
+                width: 5px; height: 5px;
+                border-radius: 50%;
+                background: #8b5cf6;
+                animation: dp 1.4s ease-in-out infinite;
+            }
+            .dot-pulse span:nth-child(2) { animation-delay: 0.2s; }
+            .dot-pulse span:nth-child(3) { animation-delay: 0.4s; }
+
+            @keyframes dp {
+                0%,80%,100% { opacity:0.3; transform:scale(0.8); }
+                40% { opacity:1; transform:scale(1.3); }
+            }
+
+            .fact-label {
+                font-size: 10px; text-transform: uppercase;
+                letter-spacing: 1.5px; color: #475569;
+                margin-bottom: 6px; font-weight: 600;
+            }
+
+            .fact-card {
+                background: linear-gradient(135deg, rgba(59,130,246,0.06), rgba(139,92,246,0.06));
+                border: 1px solid rgba(99,102,241,0.15);
+                border-radius: 14px;
+                padding: 10px 16px;
+                animation: fadeSwap 0.5s ease;
+            }
+            .fact-emoji { font-size: 20px; margin-bottom: 2px; }
+            .fact-text { font-size: 13px; font-weight: 500; color: #94a3b8; line-height: 1.5; }
+
+            @keyframes fadeSwap {
+                from { opacity:0; transform:translateY(6px); }
+                to   { opacity:1; transform:translateY(0); }
+            }
+            </style>
+
+            <div class="thinking-container">
+                <div class="avatar-side">
+                    <canvas id="avatar-canvas"></canvas>
+                </div>
+
+                <div class="info-side">
+                    <div class="thinking-label">
+                        Scout is thinking
+                        <div class="dot-pulse">
+                            <span></span><span></span><span></span>
+                        </div>
+                    </div>
+
+                    <div class="fact-label">✨ Did you know?</div>
+                    <div class="fact-card" id="fact-card">
+                        <div class="fact-emoji" id="fact-emoji">FIRST_EMOJI</div>
+                        <div class="fact-text" id="fact-text">FIRST_TEXT</div>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+            // ── Three.js 3D Robot Avatar ──
+            const canvas = document.getElementById('avatar-canvas');
+            const W = 140, H = 140;
+            canvas.width = W * 2; canvas.height = H * 2;
+
+            const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+            renderer.setSize(W, H);
+            renderer.setPixelRatio(2);
+
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+            camera.position.set(0, 0.3, 5);
+
+            // Lighting
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+            dirLight.position.set(3, 4, 5);
+            scene.add(dirLight);
+            const rimLight = new THREE.DirectionalLight(0x8b5cf6, 0.4);
+            rimLight.position.set(-3, 2, -2);
+            scene.add(rimLight);
+
+            const robot = new THREE.Group();
+
+            // Materials
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.3, metalness: 0.6 });
+            const darkMat = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.4, metalness: 0.5 });
+            const eyeMat  = new THREE.MeshStandardMaterial({ color: 0x67e8f9, emissive: 0x67e8f9, emissiveIntensity: 0.8 });
+            const antMat  = new THREE.MeshStandardMaterial({ color: 0xa78bfa, emissive: 0xa78bfa, emissiveIntensity: 0.6 });
+
+            // Head
+            const headGeo = new THREE.BoxGeometry(1.2, 1, 1, 4, 4, 4);
+            // Round the box vertices for a smoother look
+            const pos = headGeo.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+                const len = Math.sqrt(x*x + y*y + z*z);
+                const r = 0.75;
+                if (len > r) {
+                    const s = r / len;
+                    pos.setXYZ(i, x * (0.65 + 0.35 * s), y * (0.65 + 0.35 * s), z * (0.65 + 0.35 * s));
+                }
+            }
+            headGeo.computeVertexNormals();
+            const head = new THREE.Mesh(headGeo, bodyMat);
+            head.position.y = 0.6;
+            robot.add(head);
+
+            // Visor / face plate
+            const visorGeo = new THREE.BoxGeometry(1.0, 0.45, 0.15);
+            const visor = new THREE.Mesh(visorGeo, darkMat);
+            visor.position.set(0, 0.55, 0.48);
+            robot.add(visor);
+
+            // Eyes
+            const eyeGeo = new THREE.SphereGeometry(0.1, 16, 16);
+            const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+            leftEye.position.set(-0.22, 0.58, 0.56);
+            robot.add(leftEye);
+            const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+            rightEye.position.set(0.22, 0.58, 0.56);
+            robot.add(rightEye);
+
+            // Antenna
+            const antGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.35, 8);
+            const antenna = new THREE.Mesh(antGeo, darkMat);
+            antenna.position.set(0, 1.28, 0);
+            robot.add(antenna);
+
+            // Antenna orb
+            const orbGeo = new THREE.SphereGeometry(0.09, 16, 16);
+            const orb = new THREE.Mesh(orbGeo, antMat);
+            orb.position.set(0, 1.5, 0);
+            robot.add(orb);
+
+            // Ears
+            const earGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.2, 8);
+            const leftEar = new THREE.Mesh(earGeo, darkMat);
+            leftEar.rotation.z = Math.PI / 2;
+            leftEar.position.set(-0.7, 0.6, 0);
+            robot.add(leftEar);
+            const rightEar = new THREE.Mesh(earGeo, darkMat);
+            rightEar.rotation.z = Math.PI / 2;
+            rightEar.position.set(0.7, 0.6, 0);
+            robot.add(rightEar);
+
+            // Neck
+            const neckGeo = new THREE.CylinderGeometry(0.15, 0.2, 0.2, 8);
+            const neck = new THREE.Mesh(neckGeo, darkMat);
+            neck.position.y = 0.0;
+            robot.add(neck);
+
+            // Body
+            const bodyGeo = new THREE.BoxGeometry(1.0, 0.8, 0.7, 4, 4, 4);
+            const bpos = bodyGeo.attributes.position;
+            for (let i = 0; i < bpos.count; i++) {
+                const x = bpos.getX(i), y = bpos.getY(i), z = bpos.getZ(i);
+                const len = Math.sqrt(x*x + y*y + z*z);
+                const r = 0.55;
+                if (len > r) {
+                    const s = r / len;
+                    bpos.setXYZ(i, x * (0.7 + 0.3 * s), y * (0.7 + 0.3 * s), z * (0.7 + 0.3 * s));
+                }
+            }
+            bodyGeo.computeVertexNormals();
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = -0.55;
+            robot.add(body);
+
+            // Chest light
+            const chestGeo = new THREE.CircleGeometry(0.1, 16);
+            const chestMat = new THREE.MeshStandardMaterial({ color: 0x67e8f9, emissive: 0x67e8f9, emissiveIntensity: 1 });
+            const chest = new THREE.Mesh(chestGeo, chestMat);
+            chest.position.set(0, -0.5, 0.36);
+            robot.add(chest);
+
+            scene.add(robot);
+
+            // ── Mouse interaction for rotation ──
+            let mouseX = 0, targetRotY = 0;
+            canvas.addEventListener('mousemove', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                mouseX = ((e.clientX - rect.left) / rect.width - 0.5) * 2;
+                targetRotY = mouseX * 0.5;
+            });
+            canvas.addEventListener('mouseleave', () => { targetRotY = 0; });
+
+            // ── Animation loop ──
+            const clock = new THREE.Clock();
+            function animate() {
+                requestAnimationFrame(animate);
+                const t = clock.getElapsedTime();
+
+                // Idle bob
+                robot.position.y = Math.sin(t * 1.5) * 0.08;
+                // Gentle tilt
+                robot.rotation.z = Math.sin(t * 0.8) * 0.04;
+                // Mouse-follow + idle rotation
+                robot.rotation.y += (targetRotY - robot.rotation.y) * 0.05;
+                robot.rotation.y += Math.sin(t * 0.3) * 0.002;
+
+                // Eye blink (scale Y)
+                const blink = (Math.sin(t * 3) > 0.97) ? 0.1 : 1;
+                leftEye.scale.y = blink;
+                rightEye.scale.y = blink;
+
+                // Antenna orb pulse
+                const pulse = 0.6 + Math.sin(t * 4) * 0.4;
+                orb.material.emissiveIntensity = pulse;
+                orb.scale.setScalar(0.9 + Math.sin(t * 4) * 0.15);
+
+                // Chest light pulse
+                chest.material.emissiveIntensity = 0.6 + Math.sin(t * 2.5) * 0.4;
+
+                renderer.render(scene, camera);
+            }
+            animate();
+
+            // ── Rotate facts ──
+            const facts = FACTS_PLACEHOLDER;
+            let idx = 0;
+            setInterval(() => {
+                idx = (idx + 1) % facts.length;
+                const card = document.getElementById("fact-card");
+                const emoji = document.getElementById("fact-emoji");
+                const text = document.getElementById("fact-text");
+                if (card && emoji && text) {
+                    card.style.animation = "none";
+                    void card.offsetHeight;
+                    card.style.animation = "fadeSwap 0.5s ease";
+                    emoji.innerText = facts[idx].emoji;
+                    text.innerText = facts[idx].text;
+                }
+            }, 3000);
+            </script>
+        """
+        thinking_html = thinking_html.replace("FACTS_PLACEHOLDER", facts_json)
+        thinking_html = thinking_html.replace("FIRST_EMOJI", first_emoji)
+        thinking_html = thinking_html.replace("FIRST_TEXT", first_text)
+
+        with text_placeholder.container():
+            components.html(thinking_html, height=180)
 
         for event in st.session_state.agent.stream(
             user_input,
@@ -405,6 +742,9 @@ if user_input:
                     )
 
             elif event["type"] == "token":
+                if not thinking_cleared:
+                    text_placeholder.empty()
+                    thinking_cleared = True
                 full_content += event["content"]
                 text_placeholder.markdown(full_content + "▌")
 
@@ -427,12 +767,13 @@ if user_input:
             cols = st.columns(min(len(options), 3))
             for i, opt in enumerate(options):
                 col = cols[i % min(len(options), 3)]
-                if col.button(
+                col.button(
                     f"👉 {opt}",
                     key=f"new_opt_{i}",
                     use_container_width=True,
-                ):
-                    st.session_state.pending_question = opt
+                    on_click=_set_pending,
+                    args=(opt,),
+                )
 
     # Save to history
     st.session_state.messages.append({
