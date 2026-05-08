@@ -76,6 +76,7 @@ class ChatRequest(BaseModel):
 #  Routes
 # ──────────────────────────────────────────────
 @app.get("/api/health")
+@app.head("/api/health")
 async def health():
     """Simple health check."""
     return {
