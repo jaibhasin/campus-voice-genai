@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import ChatWidget from "@/components/ChatWidget";
+import CallOverlay from "@/components/CallOverlay";
 
 const QUICK_QUESTIONS = [
   { emoji: "📋", text: "How do I apply for admission?" },
@@ -17,6 +18,7 @@ export default function Home() {
   const [threadId] = useState(() => crypto.randomUUID());
   const [isStreaming, setIsStreaming] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isCallOpen, setIsCallOpen] = useState(false);
   const abortRef = useRef(null);
 
   const sendMessage = useCallback(
@@ -190,6 +192,20 @@ export default function Home() {
               </motion.button>
             ))}
           </motion.div>
+
+          {/* Call Scout button */}
+          <motion.button
+            className="call-scout-btn"
+            onClick={() => setIsCallOpen(true)}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 1.0, duration: 0.4 }}
+            whileHover={{ scale: 1.05, y: -2 }}
+            whileTap={{ scale: 0.97 }}
+          >
+            <span className="call-scout-icon">📞</span>
+            <span>Call Scout</span>
+          </motion.button>
         </motion.div>
       </main>
 
@@ -201,6 +217,12 @@ export default function Home() {
         isOpen={isChatOpen}
         onToggle={() => setIsChatOpen(!isChatOpen)}
         onNewConversation={handleNewConversation}
+      />
+
+      {/* Full-screen Call Overlay */}
+      <CallOverlay
+        isOpen={isCallOpen}
+        onClose={() => setIsCallOpen(false)}
       />
     </>
   );

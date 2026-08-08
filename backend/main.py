@@ -11,10 +11,12 @@ import os
 import sys
 import json
 import uuid
+import base64
+import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -28,18 +30,33 @@ from Agent.graph import Agent
 
 
 # ──────────────────────────────────────────────
-#  Shared agent instance (created once on startup)
+#  Shared instances (created once on startup)
 # ──────────────────────────────────────────────
 agent_instance: Agent | None = None
+sarvam_client = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the agent when the server starts."""
-    global agent_instance
+    """Initialize the agent and Sarvam client when the server starts."""
+    global agent_instance, sarvam_client
+
     print("[BOOT] Initializing Scout agent...")
     agent_instance = Agent(name="Scout")
     print("[BOOT] Agent ready!")
+
+    # Initialize Sarvam AI SDK client
+    sarvam_key = os.getenv("SARVAM_API_KEY", "")
+    if sarvam_key:
+        try:
+            from sarvamai import SarvamAI
+            sarvam_client = SarvamAI(api_subscription_key=sarvam_key)
+            print("[BOOT] Sarvam AI client ready!")
+        except Exception as e:
+            print(f"[BOOT] Sarvam AI init failed: {e}")
+    else:
+        print("[BOOT] SARVAM_API_KEY not set — voice features disabled")
+
     yield
     print("[SHUTDOWN] Cleaning up...")
 
@@ -65,11 +82,24 @@ app.add_middleware(
 
 
 # ──────────────────────────────────────────────
-#  Request model
+#  Request models
 # ──────────────────────────────────────────────
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+
+class TTSRequest(BaseModel):
+    text: str
+    language_code: str = "en-IN"
+    speaker: str = "shubh"
+    model: str = "bulbul:v3"
+
+
+# ──────────────────────────────────────────────
+#  Sarvam AI config (STT / TTS)
+# ──────────────────────────────────────────────
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
 
 
 # ──────────────────────────────────────────────
@@ -82,6 +112,7 @@ async def health():
     return {
         "status": "ok",
         "agent": agent_instance is not None,
+        "sarvam": sarvam_client is not None,
         "name": "Scout API",
     }
 
@@ -128,3 +159,102 @@ async def chat(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ──────────────────────────────────────────────
+#  Sarvam AI — Speech-to-Text (SDK)
+# ──────────────────────────────────────────────
+@app.post("/api/stt")
+async def speech_to_text(file: UploadFile = File(...)):
+    """
+    Transcribe audio using Sarvam AI SDK.
+
+    Accepts a multipart audio file (WebM/WAV/MP3) from the browser's
+    MediaRecorder and returns the transcribed text.
+    """
+    if sarvam_client is None:
+        return {"error": "Sarvam AI not configured"}
+
+    try:
+        audio_bytes = await file.read()
+
+        # SDK expects a file path or bytes — write to temp file
+        suffix = ".webm"
+        if file.content_type and "wav" in file.content_type:
+            suffix = ".wav"
+        elif file.content_type and "mp3" in file.content_type:
+            suffix = ".mp3"
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        try:
+            with open(tmp_path, "rb") as audio_file:
+                response = sarvam_client.speech_to_text.transcribe(
+                    file=audio_file,
+                    model="saaras:v3",
+                    mode="transcribe",
+                )
+            transcript = (
+                response.transcript
+                if hasattr(response, "transcript")
+                else getattr(response, "text", str(response))
+            )
+            detected_lang = (
+                getattr(response, "language_code", None)
+                or "en-IN"
+            )
+            if not detected_lang or detected_lang == "unknown":
+                detected_lang = "en-IN"
+
+            print(f"[STT Success] Transcript: {transcript} | Lang: {detected_lang}")
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+        return {"transcript": transcript, "language_code": detected_lang}
+
+    except Exception as e:
+        print(f"[STT Error] {e}")
+        return {"error": f"STT failed: {str(e)}"}
+
+
+# ──────────────────────────────────────────────
+#  Sarvam AI — Text-to-Speech (SDK)
+# ──────────────────────────────────────────────
+@app.post("/api/tts")
+async def text_to_speech(req: TTSRequest):
+    """
+    Convert text to speech using Sarvam AI SDK.
+
+    Accepts a text string and returns base64-encoded audio.
+    """
+    if sarvam_client is None:
+        return {"error": "Sarvam AI not configured"}
+
+    try:
+        clean_text = req.text[:2400] if req.text else ""
+        if not clean_text:
+            return {"error": "Empty text"}
+
+        response = sarvam_client.text_to_speech.convert(
+            model="bulbul:v3",
+            text=clean_text,
+            language_code=req.language_code or "en-IN",
+            speaker=req.speaker or "shubh",
+            output_audio_codec="wav",
+        )
+
+        # SDK returns response with audios attribute (base64 strings)
+        audio_b64 = ""
+        if hasattr(response, "audios") and response.audios:
+            audio_b64 = response.audios[0]
+        elif hasattr(response, "audio"):
+            # Some SDK versions return raw bytes
+            audio_b64 = base64.b64encode(response.audio).decode("utf-8")
+
+        return {"audio_base64": audio_b64}
+
+    except Exception as e:
+        return {"error": f"TTS failed: {str(e)}"}
+

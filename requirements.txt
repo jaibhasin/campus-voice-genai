@@ -33,3 +33,6 @@ streamlit
 fastapi
 uvicorn[standard]
 python-multipart
+
+# Sarvam AI voice (STT/TTS) SDK
+sarvamai
