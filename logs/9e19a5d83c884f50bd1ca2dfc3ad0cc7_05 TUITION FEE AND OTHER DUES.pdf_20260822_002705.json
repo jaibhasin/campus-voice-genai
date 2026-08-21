@@ -1,0 +1,69 @@
+[
+  {
+    "total_page_number": 4
+  },
+  {
+    "total_token": 2628
+  },
+  {
+    "toc_content": null,
+    "toc_page_list": [],
+    "page_index_given_in_toc": "no"
+  },
+  {
+    "message": "len(group_texts): 1"
+  },
+  {
+    "message": "generate_toc: [{'structure': '1', 'title': 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES (2026-27)', 'physical_index': '<physical_index_1>'}, {'structure': '1.1', 'title': 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES FOR OTHER THAN FN/NRI CATEGORY', 'physical_index': '<physical_index_1>'}, {'structure': '1.1.1', 'title': 'Admission Fee (One Time fee to be paid at the time of admission only)', 'physical_index': '<physical_index_1>'}, {'structure': '1.1.2', 'title': 'Programme Fee (To be paid each semester in equal Instalments)', 'physical_index': '<physical_index_1>'}, {'structure': '1.1.3', 'title': 'FEE WAIVER APPLICABLE FOR BME, CHE, CCA, CIE, ELE, EIC, MEE, MEC PROGRAMMES', 'physical_index': '<physical_index_1>'}, {'structure': '1.2', 'title': 'NOTE', 'physical_index': '<physical_index_2>'}, {'structure': '1.3', 'title': 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMS FOR FN/NRI CATEGORY', 'physical_index': '<physical_index_2>'}, {'structure': '1.3.1', 'title': 'Admission Fee (One Time fee to be paid at the time of admission only) \u2013 USD 500', 'physical_index': '<physical_index_2>'}, {'structure': '1.3.2', 'title': 'Programme Fee (To be paid annually in equal Instalments)', 'physical_index': '<physical_index_2>'}, {'structure': '1.3.3', 'title': 'NOTE', 'physical_index': '<physical_index_2>'}, {'structure': '2', 'title': 'FEE FOR HOSTEL ACCOMMODATION', 'physical_index': '<physical_index_3>'}, {'structure': '2.1', 'title': 'HOSTEL FEES PER SEMESTER (PATIALA CAMPUS)', 'physical_index': '<physical_index_3>'}, {'structure': '2.2', 'title': 'HOSTEL FEES PER SEMESTER (LMTSM, DERABASSI CAMPUS)', 'physical_index': '<physical_index_4>'}]"
+  },
+  {
+    "message": "convert_physical_index_to_int: [{'structure': '1', 'title': 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES (2026-27)', 'physical_index': 1}, {'structure': '1.1', 'title': 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES FOR OTHER THAN FN/NRI CATEGORY', 'physical_index': 1}, {'structure': '1.1.1', 'title': 'Admission Fee (One Time fee to be paid at the time of admission only)', 'physical_index': 1}, {'structure': '1.1.2', 'title': 'Programme Fee (To be paid each semester in equal Instalments)', 'physical_index': 1}, {'structure': '1.1.3', 'title': 'FEE WAIVER APPLICABLE FOR BME, CHE, CCA, CIE, ELE, EIC, MEE, MEC PROGRAMMES', 'physical_index': 1}, {'structure': '1.2', 'title': 'NOTE', 'physical_index': 2}, {'structure': '1.3', 'title': 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMS FOR FN/NRI CATEGORY', 'physical_index': 2}, {'structure': '1.3.1', 'title': 'Admission Fee (One Time fee to be paid at the time of admission only) \u2013 USD 500', 'physical_index': 2}, {'structure': '1.3.2', 'title': 'Programme Fee (To be paid annually in equal Instalments)', 'physical_index': 2}, {'structure': '1.3.3', 'title': 'NOTE', 'physical_index': 2}, {'structure': '2', 'title': 'FEE FOR HOSTEL ACCOMMODATION', 'physical_index': 3}, {'structure': '2.1', 'title': 'HOSTEL FEES PER SEMESTER (PATIALA CAMPUS)', 'physical_index': 3}, {'structure': '2.2', 'title': 'HOSTEL FEES PER SEMESTER (LMTSM, DERABASSI CAMPUS)', 'physical_index': 4}]"
+  },
+  {
+    "mode": "process_toc_with_page_numbers",
+    "accuracy": 1.0,
+    "incorrect_results": []
+  },
+  {
+    "message": "Checking title appearance in start concurrently"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'NOTE' is the first content in the given page_text, ignoring any space inconsistencies.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'NOTE' is the first content in the given page_text, ignoring any space inconsistencies.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'FEE FOR HOSTEL ACCOMMODATION' is the first content in the given page_text, and there are no other contents before it. The text matches the section title exactly, ignoring any space inconsistencies.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The given page_text starts with a 'NOTE' section and other content before the section title 'Programme Fee (To be paid annually in equal Instalments)' appears. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The given section title 'Admission Fee (One Time fee to be paid at the time of admission only) \u2013 USD 500' appears after a note and other introductory content in the page_text. The section title is not the first content in the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES (2026-27)' is the first content in the given page_text, and there are no other contents before it. The text matches the section title exactly, ignoring any space inconsistencies.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a 'NOTE' section that contains various points about fees and charges, which is different from the given section title 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMS FOR FN/NRI CATEGORY'. The section title appears after this initial content, indicating that the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a different section titled 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES (2026-27)' and contains other content before the section title 'Programme Fee (To be paid each semester in equal Instalments)' appears. Therefore, the current section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The given section title is 'HOSTEL FEES PER SEMESTER (LMTSM, DERABASSI CAMPUS)'. The page_text starts with '(II) HOSTEL FEES PER SEMESTER (LMTSM, DERABASSI CAMPUS)', which is a close match to the section title, ignoring the Roman numeral '(II)' and space inconsistencies. Therefore, the section title appears to start at the beginning of the page_text.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text contains content related to fees and dues for various programmes before the section title 'FEE WAIVER APPLICABLE FOR BME, CHE, CCA, CIE, ELE, EIC, MEE, MEC PROGRAMMES' appears. This indicates that the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a different section titled 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES (2026-27)' followed by 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES FOR OTHER THAN FN/NRI CATEGORY'. The given section title 'Admission Fee (One Time fee to be paid at the time of admission only)' appears after these initial sections, indicating that it does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES (2026-27)', which is similar to the section title 'FEE AND OTHER DUES FOR THE VARIOUS PROGRAMMES FOR OTHER THAN FN/NRI CATEGORY'. The main part of the section title is present at the start of the page_text, and the additional part 'FOR OTHER THAN FN/NRI CATEGORY' follows immediately after. There is no other content before the section title in the page_text.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The given section title is 'HOSTEL FEES PER SEMESTER (PATIALA CAMPUS)', but the page_text starts with 'FEE FOR HOSTEL ACCOMMODATION (I) HOSTEL FEES PER SEMESTER (PATIALA CAMPUS)'. There is additional content 'FEE FOR HOSTEL ACCOMMODATION (I)' before the section title, indicating that the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  }
+]

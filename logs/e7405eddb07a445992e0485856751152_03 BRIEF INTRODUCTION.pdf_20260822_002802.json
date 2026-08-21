@@ -1,0 +1,122 @@
+[
+  {
+    "total_page_number": 13
+  },
+  {
+    "total_token": 7487
+  },
+  {
+    "toc_content": "B. SCHOOLS  \n(i) Humanities and Social Sciences  \n(ii) L M Thapar School of Management (Off campus)  \n(iii) Thapar School of Liberal Arts and Science  \nC. CENTRES  \n(i) Central Library  \n(ii) Central Workshop  \n(iii) Centre for Industrial Liaison and Placement (CILP)  \n(iv) Centre for Training & Development (CTD)  \n(v) Centre of Relevance and Excellence (CORE) in Agro and Industrial Biotechnology  \n(vi) Centre of Information and Technology Management (CITM)  \n(vii) Science and Technology Entrepreneur\u2019s Park (STEP)  \n(viii) Experiential Learning  Centre  \nMedium of Instruction \u2013 English  \nFACULTY  \n \nRecruiting high -quality faculty is fundamental to the success of any academic \ninstitution. At Thapar Institute of Engineering & Technology (TIET), we follow a rigorous \nand transparent selection process to ensure that we bring the best talent on board. \nProspective candidates present their research work to an internal committee, followed \nby in -depth interviews conducted by a panel of external experts from premier institutes \nsuch as IITs and IIMs. Preference is given to candidates who have earned their PhDs \nfrom institutions ranked among the top 50 in the NIRF rankings, ensuring strong \nacademic credentials and research excellence.  \nRecognizing that professional growth does not end with recruitment, TIET has \nestablished a structured framework for continuous faculty development. Through a \nformal MoU with Trinity College Dublin (TCD), faculty members are trained in advanced \npedagogical practices and innovative teaching methodologies. Additionally, faculty \nhave benefitted from the University of Queensland\u2019s UQ -STEP Program (Scholarship of \nTeaching and Education Program). To institutionalize these efforts, TIET has launched \nThapar Learn, under which TCD - and UQ -trained faculty now lead both basic and \nadvanced training programs for peers. Our long -term goal is for all faculty members to \nbe certified in globally recognized teaching and learning methodologies.  \nFurther strengthening this commitment, TIET conducted a specialized faculty training \nprogram on Artificial Intelligence in collaboration with George Mason University, USA. \nThe program focused on enhancing both pedagogical and technical competencies \nin emerging AI domains. Through expert -led workshops, hands -on sessions with modern \nAI tools, and exposure to international best practices, participants gained valuable \ninsights into AI fundamentals, machine learning models, and classroom -level \nimplementation strategies. This initiative reinforces TIET\u2019s dedication to academic \nexcellence, capacity building, and the continuous upskilling of faculty in alignment \nwith global standards.  \n \n \nMoU WITH FOREIGN UNIVERSITIES/ORGANIZATIONS  \n \nThapar Institute of Engineering & Technology has Institutional MoUs with top universities \nglobally . Prominent ones are  \n \n\u2022 University of New South Wales,  \n\u2022 University of Queensland, Australia,  ",
+    "toc_page_list": [
+      2
+    ],
+    "page_index_given_in_toc": "no"
+  },
+  {
+    "message": "len(group_texts): 1"
+  },
+  {
+    "message": "generate_toc: [{'structure': '1', 'title': 'BRIEF INTRODUCTION', 'physical_index': '<physical_index_1>'}, {'structure': '2', 'title': 'ACADEMIC PROGRAMMES OF THE INSTITUTE', 'physical_index': '<physical_index_1>'}, {'structure': '3', 'title': 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)', 'physical_index': '<physical_index_1>'}, {'structure': '3.1', 'title': 'National Assessment and Accreditation Council (NAAC), UGC', 'physical_index': '<physical_index_1>'}, {'structure': '3.2', 'title': 'Accreditation Board for Engineering and Technology (ABET)', 'physical_index': '<physical_index_1>'}, {'structure': '3.3', 'title': 'National Board of Accreditation (NBA)', 'physical_index': '<physical_index_1>'}, {'structure': '4', 'title': 'RANKINGS', 'physical_index': '<physical_index_1>'}, {'structure': '4.1', 'title': 'National Institute Ranking Framework (NIRF) Rankings', 'physical_index': '<physical_index_1>'}, {'structure': '4.2', 'title': 'Times Higher Education Rankings', 'physical_index': '<physical_index_2>'}, {'structure': '4.3', 'title': 'QS Rankings', 'physical_index': '<physical_index_2>'}, {'structure': '4.4', 'title': 'Shanghai Subject Rankings', 'physical_index': '<physical_index_2>'}, {'structure': '5', 'title': 'ACADEMIC UNITS', 'physical_index': '<physical_index_2>'}, {'structure': '5.A', 'title': 'DEPARTMENTS', 'physical_index': '<physical_index_2>'}, {'structure': '5.B', 'title': 'SCHOOLS', 'physical_index': '<physical_index_3>'}, {'structure': '5.C', 'title': 'CENTRES', 'physical_index': '<physical_index_3>'}, {'structure': '6', 'title': 'FACULTY', 'physical_index': '<physical_index_3>'}, {'structure': '7', 'title': 'MoU WITH FOREIGN UNIVERSITIES/ORGANIZATIONS', 'physical_index': '<physical_index_3>'}, {'structure': '8', 'title': 'ALUMNI UPDATE', 'physical_index': '<physical_index_4>'}, {'structure': '9', 'title': 'CENTRE FOR TRAINING & DEVELOPMENT (CTD)', 'physical_index': '<physical_index_5>'}, {'structure': '9.I', 'title': 'Employability Training Programs', 'physical_index': '<physical_index_6>'}, {'structure': '9.II', 'title': 'Career Support Programs', 'physical_index': '<physical_index_7>'}, {'structure': '9.III', 'title': 'Professional Readiness Programs', 'physical_index': '<physical_index_8>'}, {'structure': '9.IV', 'title': 'Skill Assessment Programs', 'physical_index': '<physical_index_9>'}, {'structure': '9.V', 'title': 'Customized Training Programs', 'physical_index': '<physical_index_9>'}, {'structure': '10', 'title': 'CENTRE FOR INDUSTRIAL LIAISON AND PLACEMENT (CILP)', 'physical_index': '<physical_index_10>'}, {'structure': '10.1', 'title': 'ACTIVITIES/ PILLARS OF CILP', 'physical_index': '<physical_index_10>'}, {'structure': '10.2', 'title': 'CAMPUS RECRUITMENT', 'physical_index': '<physical_index_11>'}, {'structure': '10.3', 'title': 'INTERNSHIP IN INDUSTRY', 'physical_index': '<physical_index_11>'}, {'structure': '10.4', 'title': 'INDUSTRY INSTITUTE INTERACTIONS', 'physical_index': '<physical_index_11>'}, {'structure': '11', 'title': 'TRANSLATIONAL RESEARCH @ TIET', 'physical_index': '<physical_index_12>'}]"
+  },
+  {
+    "message": "convert_physical_index_to_int: [{'structure': '1', 'title': 'BRIEF INTRODUCTION', 'physical_index': 1}, {'structure': '2', 'title': 'ACADEMIC PROGRAMMES OF THE INSTITUTE', 'physical_index': 1}, {'structure': '3', 'title': 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)', 'physical_index': 1}, {'structure': '3.1', 'title': 'National Assessment and Accreditation Council (NAAC), UGC', 'physical_index': 1}, {'structure': '3.2', 'title': 'Accreditation Board for Engineering and Technology (ABET)', 'physical_index': 1}, {'structure': '3.3', 'title': 'National Board of Accreditation (NBA)', 'physical_index': 1}, {'structure': '4', 'title': 'RANKINGS', 'physical_index': 1}, {'structure': '4.1', 'title': 'National Institute Ranking Framework (NIRF) Rankings', 'physical_index': 1}, {'structure': '4.2', 'title': 'Times Higher Education Rankings', 'physical_index': 2}, {'structure': '4.3', 'title': 'QS Rankings', 'physical_index': 2}, {'structure': '4.4', 'title': 'Shanghai Subject Rankings', 'physical_index': 2}, {'structure': '5', 'title': 'ACADEMIC UNITS', 'physical_index': 2}, {'structure': '5.A', 'title': 'DEPARTMENTS', 'physical_index': 2}, {'structure': '5.B', 'title': 'SCHOOLS', 'physical_index': 3}, {'structure': '5.C', 'title': 'CENTRES', 'physical_index': 3}, {'structure': '6', 'title': 'FACULTY', 'physical_index': 3}, {'structure': '7', 'title': 'MoU WITH FOREIGN UNIVERSITIES/ORGANIZATIONS', 'physical_index': 3}, {'structure': '8', 'title': 'ALUMNI UPDATE', 'physical_index': 4}, {'structure': '9', 'title': 'CENTRE FOR TRAINING & DEVELOPMENT (CTD)', 'physical_index': 5}, {'structure': '9.I', 'title': 'Employability Training Programs', 'physical_index': 6}, {'structure': '9.II', 'title': 'Career Support Programs', 'physical_index': 7}, {'structure': '9.III', 'title': 'Professional Readiness Programs', 'physical_index': 8}, {'structure': '9.IV', 'title': 'Skill Assessment Programs', 'physical_index': 9}, {'structure': '9.V', 'title': 'Customized Training Programs', 'physical_index': 9}, {'structure': '10', 'title': 'CENTRE FOR INDUSTRIAL LIAISON AND PLACEMENT (CILP)', 'physical_index': 10}, {'structure': '10.1', 'title': 'ACTIVITIES/ PILLARS OF CILP', 'physical_index': 10}, {'structure': '10.2', 'title': 'CAMPUS RECRUITMENT', 'physical_index': 11}, {'structure': '10.3', 'title': 'INTERNSHIP IN INDUSTRY', 'physical_index': 11}, {'structure': '10.4', 'title': 'INDUSTRY INSTITUTE INTERACTIONS', 'physical_index': 11}, {'structure': '11', 'title': 'TRANSLATIONAL RESEARCH @ TIET', 'physical_index': 12}]"
+  },
+  {
+    "mode": "process_toc_with_page_numbers",
+    "accuracy": 1.0,
+    "incorrect_results": []
+  },
+  {
+    "message": "Checking title appearance in start concurrently"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a section titled 'BRIEF INTRODUCTION' before the section titled 'ACADEMIC PROGRAMMES OF THE INSTITUTE'. Therefore, the section 'ACADEMIC PROGRAMMES OF THE INSTITUTE' does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with content related to on-campus activities and international admissions before the section title 'Professional Readiness Programs' appears. This indicates that the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with content related to rankings in 'Management' and 'Research' categories, which appear before the section title 'Times Higher Education Rankings'. Therefore, the section title does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'CAMPUS RECRUITMENT' appears after other content in the page_text, specifically after the 'Operational Excellence' section and its details.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'INTERNSHIP IN INDUSTRY' appears in the page_text, but it is preceded by other content such as 'Flagship CILP Conclave and L&D initiatives', 'Operational Excellence', and 'CAMPUS RECRUITMENT'. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'ACADEMIC UNITS' appears after several other contents related to rankings and subjects. The page_text starts with information about rankings, and the section title 'ACADEMIC UNITS' is not the first content in the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'TRANSLATIONAL RESEARCH @ TIET' appears after a list of company names and numbers, indicating that there is content before the section title in the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with 'B. SCHOOLS', which matches the section title 'SCHOOLS' after ignoring the space inconsistency. Therefore, the section title is the first content in the given page_text.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text contains content related to schools and centers before the section title 'FACULTY' appears. This indicates that the section 'FACULTY' does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'CENTRE FOR TRAINING & DEVELOPMENT (CTD)' appears after several other sections and content in the page_text. The page_text begins with content related to alumni events and collaborations, and the section title appears much later in the text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a section titled 'BRIEF INTRODUCTION' followed by other sections before reaching the 'National Board of Accreditation (NBA)' section. Therefore, the 'National Board of Accreditation (NBA)' section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'Shanghai Subject Rankings' appears in the page_text, but it is preceded by content related to other rankings such as Times Higher Education Rankings and QS Rankings. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with content related to other courses and programs before mentioning the section title 'Customized Training Programs'. The section title appears later in the text, indicating that it does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with rankings and other content before the section title 'DEPARTMENTS' appears. The section title 'DEPARTMENTS' is not the first content in the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'Skill Assessment Programs' appears after several other sections and content in the page_text. The page_text begins with content related to 'Personal Branding', 'Leading with Impact', and 'Creative Thinking for Professional Success' before reaching the 'Skill Assessment Programs' section.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with content related to rankings in the 'Management' and 'Research' categories, followed by 'Times Higher Education Rankings'. The section title 'QS Rankings' appears later in the text, after these initial contents.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'BRIEF INTRODUCTION' is the first content in the given page_text, with no other content preceding it. The presence of spaces after the title does not affect its position as the starting content.\", 'start_begin': 'yes'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text starts with 'B. SCHOOLS' and contains other content before the section title 'CENTRES'. Therefore, the section 'CENTRES' does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'ALUMNI UPDATE' appears after a list of universities and industries, indicating that there is content before the section title in the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)' appears after other sections such as 'BRIEF INTRODUCTION' and 'ACADEMIC PROGRAMMES OF THE INSTITUTE'. Therefore, it does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'National Assessment and Accreditation Council (NAAC), UGC' appears in the page_text, but it is not at the beginning. There are other sections and content such as 'BRIEF INTRODUCTION', 'ACADEMIC PROGRAMMES OF THE INSTITUTE', and 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)' before it.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'INDUSTRY INSTITUTE INTERACTIONS' appears after several other sections and content in the page_text. The page_text starts with content related to 'Flagship CILP Conclave and L&D initiatives' and continues with sections on 'Operational Excellence', 'CAMPUS RECRUITMENT', and 'INTERNSHIP IN INDUSTRY' before reaching the 'INDUSTRY INSTITUTE INTERACTIONS' section.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with content that is not the section title 'Employability Training Programs'. Instead, it starts with a sentence about the long-term goals of the programs. The section title 'Employability Training Programs' appears after this initial content, indicating that it does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'Career Support Programs' appears after several other sections and content in the page_text. The page_text starts with content related to 'Test-taking and strategy sessions' and 'Words - Worth', followed by 'Placement Symposium', before reaching the 'Career Support Programs' section. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a section titled 'BRIEF INTRODUCTION', followed by other sections such as 'ACADEMIC PROGRAMMES OF THE INSTITUTE' and 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)' before reaching the 'RANKINGS' section. Therefore, the 'RANKINGS' section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a 'BRIEF INTRODUCTION' section and contains other sections such as 'ACADEMIC PROGRAMMES OF THE INSTITUTE' and 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)' before the 'RANKINGS' section where the 'National Institute Ranking Framework (NIRF) Rankings' is mentioned. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The page_text begins with a 'BRIEF INTRODUCTION' section followed by 'ACADEMIC PROGRAMMES OF THE INSTITUTE' and 'ACCREDITATIONS OF THAPAR INSTITUTE OF ENGINEERING & TECHNOLOGY (TIET)' before reaching the 'Accreditation Board for Engineering and Technology (ABET)' section. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'CENTRE FOR INDUSTRIAL LIAISON AND PLACEMENT (CILP)' does not appear at the very beginning of the page_text. There are several bullet points and sentences before the section title appears.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'ACTIVITIES/ PILLARS OF CILP' appears after several paragraphs of text in the page_text. The page_text begins with information about trainers, registration, and social media presence, followed by a detailed description of the Centre for Industrial Liaison and Placement (CILP) before reaching the section title. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  },
+  {
+    "message": "Response: {'thinking': \"The section title 'MoU WITH FOREIGN UNIVERSITIES/ORGANIZATIONS' appears after several other sections and content in the page_text. The page_text starts with information about schools, centers, and faculty, before reaching the section titled 'MoU WITH FOREIGN UNIVERSITIES/ORGANIZATIONS'. Therefore, the section does not start at the beginning of the page_text.\", 'start_begin': 'no'}"
+  }
+]

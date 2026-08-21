@@ -20,6 +20,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sarvamai import SarvamAI
 
 # Ensure project root is on sys.path so `Agent` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):
     sarvam_key = os.getenv("SARVAM_API_KEY", "")
     if sarvam_key:
         try:
-            from sarvamai import SarvamAI
+            
             sarvam_client = SarvamAI(api_subscription_key=sarvam_key)
             print("[BOOT] Sarvam AI client ready!")
         except Exception as e:

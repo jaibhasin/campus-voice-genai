@@ -22,6 +22,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from .tools import all_tools
 from .prompts.prompts import college_assistant_system_prompt
+from langchain_core.messages import AIMessageChunk, ToolMessage
 
 class AgentState(BaseModel):
     messages: Annotated[List[BaseMessage], add_messages]
@@ -98,7 +99,7 @@ class Agent():
                   or {"type": "tool_call", "name": str, "args": str} for tool usage,
                   or {"type": "done", "full_content": str} when finished.
         """
-        from langchain_core.messages import AIMessageChunk, ToolMessage
+        
 
         tool_calls_log = []
         final_content = ""

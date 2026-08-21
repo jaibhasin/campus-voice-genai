@@ -237,7 +237,7 @@ export default function CallOverlay({ isOpen, onClose }) {
             { id: userMsgId, role: "user", text: userText },
           ]);
 
-          // ── 2. Chat Agent (SSE) ──
+          // ── 2. Chat Agent (SSE) + Sentence-Level TTS Streaming ──
           setCallState("thinking");
           const assistantMsgId = crypto.randomUUID();
 
@@ -261,6 +261,91 @@ export default function CallOverlay({ isOpen, onClose }) {
           let buffer = "";
           let fullResponse = "";
 
+          // Sentence-level TTS: collect sentences and fire TTS early
+          const audioQueue = [];      // Queue of Audio objects to play sequentially
+          let ttsInFlight = 0;        // Number of TTS requests in flight
+          let streamDone = false;      // Agent stream finished
+          let isPlaying = false;       // Currently playing audio
+          let sentText = "";           // Text already sent to TTS
+          const sentenceSplitRe = /(?<=[.!?।\n])\s+/;
+
+          // Helper: clean text for TTS
+          const cleanForTTS = (text) =>
+            text
+              .replace(/\[OPTIONS\][\s\S]*?\[\/OPTIONS\]/g, "")
+              .replace(/\*\*(.*?)\*\*/g, "$1")
+              .replace(/\*(.*?)\*/g, "$1")
+              .replace(/`(.*?)`/g, "$1")
+              .replace(/[#>*_~`]/g, "")
+              .trim();
+
+          // Helper: play next audio in queue
+          const playNext = () => {
+            if (!activeRef.current || audioQueue.length === 0) {
+              isPlaying = false;
+              // If stream is done and queue is empty and no TTS in flight, start listening
+              if (streamDone && ttsInFlight === 0) {
+                if (activeRef.current) startListening();
+              }
+              return;
+            }
+            isPlaying = true;
+            setCallState("speaking");
+            const audio = audioQueue.shift();
+            audioRef.current = audio;
+            audio.onended = () => playNext();
+            audio.onerror = () => playNext();
+            audio.play().catch(() => playNext());
+          };
+
+          // Helper: send a chunk of text to TTS
+          const fireTTS = async (text) => {
+            const clean = cleanForTTS(text);
+            if (!clean || clean.length < 2) return;
+
+            ttsInFlight++;
+            try {
+              const ttsResp = await fetch(`${API_URL}/api/tts`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  text: clean,
+                  language_code: detectedLanguageRef.current || "en-IN",
+                  speaker: "shubh",
+                  model: "bulbul:v3",
+                }),
+              });
+              const ttsData = await ttsResp.json();
+              if (ttsData.audio_base64 && activeRef.current) {
+                const audioSrc = `data:audio/wav;base64,${ttsData.audio_base64}`;
+                const audio = new Audio(audioSrc);
+                audioQueue.push(audio);
+                if (!isPlaying) playNext();
+              }
+            } catch (err) {
+              console.error("[Sentence TTS Error]", err);
+            } finally {
+              ttsInFlight--;
+              // Check if everything is done
+              if (streamDone && ttsInFlight === 0 && !isPlaying && audioQueue.length === 0) {
+                if (activeRef.current) startListening();
+              }
+            }
+          };
+
+          // Helper: check for complete sentences and fire TTS
+          const trySendSentences = () => {
+            const unsent = fullResponse.slice(sentText.length);
+            const parts = unsent.split(sentenceSplitRe);
+            // Send all complete sentences (all except the last partial one)
+            if (parts.length > 1) {
+              const completeSentences = parts.slice(0, -1).join(" ");
+              sentText += completeSentences;
+              fireTTS(completeSentences);
+            }
+          };
+
+          // Read the SSE stream
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -285,6 +370,8 @@ export default function CallOverlay({ isOpen, onClose }) {
                         : msg
                     )
                   );
+                  // Check if we have a complete sentence to TTS
+                  trySendSentences();
                 } else if (event.type === "done") {
                   fullResponse = event.full_content || fullResponse;
                   setCallMessages((prev) =>
@@ -301,56 +388,13 @@ export default function CallOverlay({ isOpen, onClose }) {
             }
           }
 
-          // ── 3. Text-to-Speech (TTS) ──
-          if (!activeRef.current || !fullResponse.trim()) {
-            if (activeRef.current) startListening();
-            return;
-          }
-
-          setCallState("speaking");
-
-          // Strip options / formatting for clear speech synthesis
-          const cleanText = fullResponse
-            .replace(/\[OPTIONS\][\s\S]*?\[\/OPTIONS\]/g, "")
-            .replace(/\*\*(.*?)\*\*/g, "$1")
-            .replace(/\*(.*?)\*/g, "$1")
-            .replace(/`(.*?)`/g, "$1")
-            .replace(/[#>*_~`]/g, "")
-            .trim();
-
-          const ttsResp = await fetch(`${API_URL}/api/tts`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              text: cleanText,
-              language_code: detectedLanguageRef.current || "en-IN",
-              speaker: "shubh",
-              model: "bulbul:v3",
-            }),
-          });
-          const ttsData = await ttsResp.json();
-
-          if (ttsData.audio_base64 && activeRef.current) {
-            const audioSrc = `data:audio/wav;base64,${ttsData.audio_base64}`;
-            const audio = new Audio(audioSrc);
-            audioRef.current = audio;
-
-            audio.onended = () => {
-              if (activeRef.current) startListening();
-            };
-            audio.onerror = (err) => {
-              console.error("[Audio Playback Error]", err);
-              if (activeRef.current) startListening();
-            };
-
-            try {
-              await audio.play();
-            } catch (playErr) {
-              console.error("[Audio Play Exception]", playErr);
-              if (activeRef.current) startListening();
-            }
-          } else {
-            console.warn("[TTS Warning] No audio returned:", ttsData);
+          // Stream ended — send any remaining unsent text to TTS
+          streamDone = true;
+          const remaining = fullResponse.slice(sentText.length).trim();
+          if (remaining) {
+            fireTTS(remaining);
+          } else if (ttsInFlight === 0 && !isPlaying && audioQueue.length === 0) {
+            // Nothing was sent to TTS at all (empty response)
             if (activeRef.current) startListening();
           }
         } catch (err) {
@@ -431,8 +475,8 @@ export default function CallOverlay({ isOpen, onClose }) {
                 callState === "speaking"
                   ? { scale: [1, 1.08, 1], boxShadow: ["0 0 0px #e67e22", "0 0 35px #e67e22", "0 0 0px #e67e22"] }
                   : callState === "listening"
-                  ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px #27ae60", "0 0 25px #27ae60", "0 0 0px #27ae60"] }
-                  : {}
+                    ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px #27ae60", "0 0 25px #27ae60", "0 0 0px #27ae60"] }
+                    : {}
               }
               transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
             >
