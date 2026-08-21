@@ -28,23 +28,32 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Agent.graph import Agent
+from Agent.prompts.prompts import voice_assistant_system_prompt
 
 
 # ──────────────────────────────────────────────
 #  Shared instances (created once on startup)
 # ──────────────────────────────────────────────
 agent_instance: Agent | None = None
+voice_agent_instance: Agent | None = None
 sarvam_client = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the agent and Sarvam client when the server starts."""
-    global agent_instance, sarvam_client
+    global agent_instance, voice_agent_instance, sarvam_client
 
     print("[BOOT] Initializing Scout agent...")
     agent_instance = Agent(name="Scout")
-    print("[BOOT] Agent ready!")
+    print("[BOOT] Chat agent ready!")
+
+    print("[BOOT] Initializing Scout voice agent...")
+    voice_agent_instance = Agent(
+        name="Scout-Voice",
+        system_prompt=voice_assistant_system_prompt,
+    )
+    print("[BOOT] Voice agent ready!")
 
     # Initialize Sarvam AI SDK client
     sarvam_key = os.getenv("SARVAM_API_KEY", "")
@@ -139,6 +148,44 @@ async def chat(req: ChatRequest):
     def event_stream():
         try:
             for event in agent_instance.stream(
+                req.message,
+                config={"configurable": {"thread_id": req.thread_id}},
+            ):
+                data = json.dumps(event, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+        except Exception as e:
+            error_event = json.dumps({
+                "type": "error",
+                "message": str(e),
+            })
+            yield f"data: {error_event}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/chat/voice")
+async def chat_voice(req: ChatRequest):
+    """
+    Voice-optimized chat endpoint.
+
+    Uses the same streaming pipeline as /api/chat but with a voice-tuned
+    system prompt that produces short, spoken-language responses without
+    markdown, emojis, tables, or [OPTIONS] blocks.
+    """
+    if voice_agent_instance is None:
+        return {"error": "Voice agent not initialized"}
+
+    def event_stream():
+        try:
+            for event in voice_agent_instance.stream(
                 req.message,
                 config={"configurable": {"thread_id": req.thread_id}},
             ):

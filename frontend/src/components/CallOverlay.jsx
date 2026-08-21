@@ -247,7 +247,7 @@ export default function CallOverlay({ isOpen, onClose }) {
             { id: assistantMsgId, role: "assistant", text: "" },
           ]);
 
-          const chatResp = await fetch(`${API_URL}/api/chat`, {
+          const chatResp = await fetch(`${API_URL}/api/chat/voice`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
