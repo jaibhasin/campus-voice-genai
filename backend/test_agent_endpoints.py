@@ -1,6 +1,8 @@
+import asyncio
 import json
 import unittest
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,36 @@ def events(response):
 
 
 class AgentEndpointTests(unittest.TestCase):
+    def test_stt_upload_passes_bytes_to_sdk_outside_event_loop(self):
+        def transcribe(**kwargs):
+            self.assertRaises(RuntimeError, asyncio.get_running_loop)
+            self.assertEqual(kwargs["file"], ("sample.wav", b"audio", "audio/wav"))
+            return SimpleNamespace(transcript="Hello", language_code="unknown")
+
+        client = Mock()
+        client.speech_to_text.transcribe.side_effect = transcribe
+        with patch.object(main, "sarvam_client", client):
+            response = TestClient(main.app).post(
+                "/api/stt", files={"file": ("sample.wav", b"audio", "audio/wav")}
+            )
+        self.assertEqual(
+            response.json(), {"transcript": "Hello", "language_code": "en-IN"}
+        )
+        client.speech_to_text.transcribe.assert_called_once()
+
+    def test_tts_sdk_runs_outside_event_loop_and_preserves_audio(self):
+        def convert(**kwargs):
+            self.assertRaises(RuntimeError, asyncio.get_running_loop)
+            self.assertEqual(kwargs["text"], "Hello")
+            return SimpleNamespace(audios=["encoded-audio"])
+
+        client = Mock()
+        client.text_to_speech.convert.side_effect = convert
+        with patch.object(main, "sarvam_client", client):
+            response = TestClient(main.app).post("/api/tts", json={"text": "Hello"})
+        self.assertEqual(response.json(), {"audio_base64": "encoded-audio"})
+        client.text_to_speech.convert.assert_called_once()
+
     def test_shutdown_flushes_traces_after_closing_agents(self):
         chat, voice = AsyncMock(), AsyncMock()
         with (

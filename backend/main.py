@@ -8,24 +8,22 @@ Run from project root:
 """
 
 import asyncio
+import base64
+import json
 import os
 import sys
-import json
 import uuid
-import base64
-import tempfile
-from pathlib import Path
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
+from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.tracers.langchain import wait_for_all_tracers
 from pydantic import BaseModel, Field
 from sarvamai import SarvamAI
-from langchain_core.tracers.langchain import wait_for_all_tracers
-
-
 
 # Ensure project root is on sys.path so `Agent` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +33,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Agent.graph import Agent
 from Agent.prompts.prompts import voice_assistant_system_prompt
-
 
 # ──────────────────────────────────────────────
 #  Shared instances (created once on startup)
@@ -68,7 +65,7 @@ async def lifespan(app: FastAPI):
             
             sarvam_client = SarvamAI(api_subscription_key=sarvam_key)
             print("[BOOT] Sarvam AI client ready!")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Optional SDK startup must not disable chat.
             print(f"[BOOT] Sarvam AI init failed: {e}")
     else:
         print("[BOOT] SARVAM_API_KEY not set — voice features disabled")
@@ -167,7 +164,7 @@ async def chat(req: ChatRequest):
             ):
                 data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {data}\n\n"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - SSE boundary reports model failures to clients.
             error_event = json.dumps({
                 "type": "error",
                 "message": str(e),
@@ -205,7 +202,7 @@ async def chat_voice(req: ChatRequest):
             ):
                 data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {data}\n\n"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - SSE boundary reports model failures to clients.
             error_event = json.dumps({
                 "type": "error",
                 "message": str(e),
@@ -227,7 +224,7 @@ async def chat_voice(req: ChatRequest):
 #  Sarvam AI — Speech-to-Text (SDK)
 # ──────────────────────────────────────────────
 @app.post("/api/stt")
-async def speech_to_text(file: UploadFile = File(...)):
+async def speech_to_text(file: Annotated[UploadFile, File()]):
     """
     Transcribe audio using Sarvam AI SDK.
 
@@ -240,45 +237,28 @@ async def speech_to_text(file: UploadFile = File(...)):
     try:
         audio_bytes = await file.read()
 
-        # SDK expects a file path or bytes — write to temp file
-        suffix = ".webm"
-        if file.content_type and "wav" in file.content_type:
-            suffix = ".wav"
-        elif file.content_type and "mp3" in file.content_type:
-            suffix = ".mp3"
+        response = await asyncio.to_thread(
+            sarvam_client.speech_to_text.transcribe,
+            file=(file.filename or "audio.webm", audio_bytes, file.content_type),
+            model="saaras:v3",
+            mode="transcribe",
+        )
+        transcript = (
+            response.transcript
+            if hasattr(response, "transcript")
+            else getattr(response, "text", str(response))
+        )
+        detected_lang = getattr(response, "language_code", None) or "en-IN"
+        if detected_lang == "unknown":
+            detected_lang = "en-IN"
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-
-        try:
-            with open(tmp_path, "rb") as audio_file:
-                response = sarvam_client.speech_to_text.transcribe(
-                    file=audio_file,
-                    model="saaras:v3",
-                    mode="transcribe",
-                )
-            transcript = (
-                response.transcript
-                if hasattr(response, "transcript")
-                else getattr(response, "text", str(response))
-            )
-            detected_lang = (
-                getattr(response, "language_code", None)
-                or "en-IN"
-            )
-            if not detected_lang or detected_lang == "unknown":
-                detected_lang = "en-IN"
-
-            print(f"[STT Success] Transcript: {transcript} | Lang: {detected_lang}")
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        print(f"[STT Success] Transcript: {transcript} | Lang: {detected_lang}")
 
         return {"transcript": transcript, "language_code": detected_lang}
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - API boundary returns recoverable speech errors.
         print(f"[STT Error] {e}")
-        return {"error": f"STT failed: {str(e)}"}
+        return {"error": f"STT failed: {e!s}"}
 
 
 # ──────────────────────────────────────────────
@@ -299,7 +279,8 @@ async def text_to_speech(req: TTSRequest):
         if not clean_text:
             return {"error": "Empty text"}
 
-        response = sarvam_client.text_to_speech.convert(
+        response = await asyncio.to_thread(
+            sarvam_client.text_to_speech.convert,
             model="bulbul:v3",
             text=clean_text,
             language_code=req.language_code or "en-IN",
@@ -317,8 +298,8 @@ async def text_to_speech(req: TTSRequest):
 
         return {"audio_base64": audio_b64}
 
-    except Exception as e:
-        return {"error": f"TTS failed: {str(e)}"}
+    except Exception as e:  # noqa: BLE001 - API boundary returns recoverable speech errors.
+        return {"error": f"TTS failed: {e!s}"}
 
 
 
