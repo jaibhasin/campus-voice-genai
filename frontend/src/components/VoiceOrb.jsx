@@ -45,7 +45,7 @@ export default function VoiceOrb({ state, analyserRef }) {
         analyserRef.current.getByteTimeDomainData(samples);
         volume = Math.sqrt(samples.reduce((sum, sample) => sum + ((sample - 128) / 128) ** 2, 0) / samples.length);
       }
-      energy += (Math.min(volume * 5, 1) - energy) * 0.16;
+      energy += ((reducedMotion.matches ? 0 : Math.min(volume * 5, 1)) - energy) * 0.16;
       const delta = previousTime ? Math.min((now - previousTime) / 1000, 0.05) : 0;
       previousTime = now;
       if (!reducedMotion.matches) time += delta * (speaking ? 1.6 + energy * 2 : busy ? 0.8 : 0.3);
