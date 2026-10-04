@@ -4,11 +4,11 @@ import unittest
 from unittest.mock import patch
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-from Agent.graph import Agent
+from Agent.graph import Agent, AgentState
 from Agent.retrieval import Retriever
 from Agent.test_retrieval import ScriptedClient, answer, documents, read_first
 
@@ -50,6 +50,21 @@ def make_agent(script, **kwargs):
 
 
 class GraphTests(unittest.TestCase):
+    def test_long_conversation_retains_a_full_bounded_suffix(self):
+        previous = "a" * 2000 + "₹" * 600 + " important follow-up detail"
+        state = AgentState(
+            messages=[
+                HumanMessage(content=previous),
+                HumanMessage(content="And hostel?"),
+            ]
+        )
+        question, conversation = Agent._retrieval_input(state)
+        self.assertEqual(question, "And hostel?")
+        self.assertTrue(conversation[0]["text"].endswith("important follow-up detail"))
+        self.assertGreater(len(conversation[0]["text"].encode("utf-8")), 1990)
+        self.assertLessEqual(len(conversation[0]["text"].encode("utf-8")), 2000)
+        self.assertTrue(conversation[0]["truncated"])
+
     def test_llm_called_once_after_source_retrieval_and_receives_full_evidence(self):
         agent, client, model = make_agent(
             [read_first, read_first, answer("ready_to_answer")]

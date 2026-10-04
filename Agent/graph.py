@@ -22,7 +22,6 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
-from .documents import text_parts
 from .prompts.prompts import (
     college_answer_system_prompt,
     college_assistant_system_prompt,
@@ -104,7 +103,9 @@ class Agent:
             text = message_text(message.content)
             if not text or remaining <= 0:
                 continue
-            suffix = text_parts(text, min(remaining, 2000))[-1]
+            suffix = text.encode("utf-8")[-min(remaining, 2000) :].decode(
+                "utf-8", errors="ignore"
+            )
             conversation.append(
                 {
                     "role": "user" if message.type == "human" else "assistant",
