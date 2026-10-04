@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import VoiceOrb from "./VoiceOrb";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -39,6 +40,7 @@ export default function CallOverlay({ isOpen, onClose }) {
   const playbackGenerationRef = useRef(0);        // Invalidates old finish timers
   const playbackDecodeChainRef = useRef(Promise.resolve()); // Preserves audio chunk order
   const playbackStartTimeRef = useRef(0);          // When current playback started (context time)
+  const playbackAnalyserRef = useRef(null);
   const playbackCtxRef = useRef(null);              // Shared AudioContext for playback
 
 
@@ -181,6 +183,10 @@ function playAudioChunk(arrayBuffer) {
   const playbackGeneration = playbackGenerationRef.current;
   if (!playbackCtxRef.current) {
     playbackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = playbackCtxRef.current.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.connect(playbackCtxRef.current.destination);
+    playbackAnalyserRef.current = analyser;
     playbackStartTimeRef.current = playbackCtxRef.current.currentTime;
   }
   const ctx = playbackCtxRef.current;
@@ -196,7 +202,7 @@ function playAudioChunk(arrayBuffer) {
       const scheduleTime = Math.max(ctx.currentTime + 0.02, playbackStartTimeRef.current);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      source.connect(playbackAnalyserRef.current);
       playbackSourcesRef.current.add(source);
       playbackStartTimeRef.current = scheduleTime + buffer.duration;
       playbackSourceRef.current = source;
@@ -397,7 +403,9 @@ const startCallSession = useCallback(async () => {
 
     // Close WebSocket
     if (wsRef.current) {
-      wsRef.current.send(JSON.stringify({ type: "end_call" }));
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "end_call" }));
+      }
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -415,6 +423,7 @@ const startCallSession = useCallback(async () => {
     if (playbackCtxRef.current) {
       playbackCtxRef.current.close();
       playbackCtxRef.current = null;
+      playbackAnalyserRef.current = null;
     }
 
     // Close AudioContext
@@ -437,48 +446,38 @@ const startCallSession = useCallback(async () => {
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <div className="call-screen">
-          {/* Top Bar */}
+        <div className="call-screen" role="dialog" aria-modal="true" aria-labelledby="call-title" data-state={callState}>
           <div className="call-top-bar">
-            <span className="call-duration">{formatDuration(callDuration)}</span>
-            <span className="call-encrypted">🔒 Live Audio Call</span>
+            <div className="call-brand"><span className="call-brand-mark">S</span><span>SCOUT <span className="call-brand-secondary">/ VOICE</span></span></div>
+            <div className="call-session"><span className="call-live-dot" /><span>{callState === "error" ? "Disconnected" : callState === "connecting" ? "Connecting" : "Live session"}</span><span className="call-duration">{formatDuration(callDuration)}</span></div>
           </div>
 
-          {/* Avatar Header */}
-          <div className="call-header-center">
-            <motion.div
-              className="call-avatar"
-              animate={
-                callState === "speaking"
-                  ? { scale: [1, 1.08, 1], boxShadow: ["0 0 0px #e67e22", "0 0 35px #e67e22", "0 0 0px #e67e22"] }
-                  : callState === "listening"
-                    ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px #27ae60", "0 0 25px #27ae60", "0 0 0px #27ae60"] }
-                    : {}
-              }
-              transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
-            >
-              🎓
-            </motion.div>
-
-            <h2 className="call-name">Scout</h2>
-            <p className="call-subtitle">TIET College Assistant</p>
-
-            {/* Current Dynamic Status */}
-            <div className="call-status-text">
-              {callState === "connecting" && "Connecting..."}
-              {callState === "error" && `❌ ${connectionError}`}
-              {callState === "listening" && "🎤 Listening... speak freely"}
-              {callState === "processing" && "⏳ Transcribing audio..."}
-              {callState === "thinking" && "💭 Scout is thinking..."}
-              {callState === "speaking" && "🔊 Speaking response..."}
+          <div className="call-main">
+            <div className="call-header-center">
+              <span className="call-eyebrow">A LITTLE CLOSER TO CAMPUS</span>
+              <div className="call-orb-stage"><VoiceOrb state={callState} analyserRef={playbackAnalyserRef} /></div>
+              <h2 className="call-name" id="call-title">{callState === "speaking" ? "Scout is speaking" : callState === "thinking" ? "Connecting the dots" : callState === "processing" ? "Got it. One moment." : callState === "error" ? "Connection interrupted" : callState === "connecting" ? "Meet your campus companion" : "I'm all ears."}</h2>
+              <p className="call-subtitle">Your world at Thapar. One conversation away.</p>
+              <div className="call-status-text" role="status">
+                <span className="call-state-indicator" />
+                {callState === "connecting" && "Setting up your call"}
+                {callState === "error" && connectionError}
+                {callState === "listening" && "Listening - speak freely"}
+                {callState === "processing" && "Transcribing your words"}
+                {callState === "thinking" && "Finding your answer"}
+                {callState === "speaking" && "Speaking - you can interrupt anytime"}
+              </div>
             </div>
-          </div>
 
+            <section className="call-transcript" aria-label="Call transcript">
+              <div className="call-transcript-heading"><span>Conversation</span><span className="call-transcript-tag">LIVE TRANSCRIPT</span></div>
           {/* Scrollable Conversation History (Kept visible all through call) */}
           <div className="call-conversation-list">
             {callMessages.length === 0 ? (
               <div className="call-history-empty">
-                <p>Start speaking naturally. Your transcript and Scout&apos;s responses will stay here throughout the call.</p>
+                <span className="call-empty-symbol" aria-hidden="true">✳</span>
+                <h3>Good conversations start here.</h3>
+                <p>Ask about admissions, campus life, or what comes next. Your conversation will appear here as you talk.</p>
               </div>
             ) : (
               callMessages.map((msg) => (
@@ -499,11 +498,17 @@ const startCallSession = useCallback(async () => {
             <div ref={messagesEndRef} />
           </div>
 
+            </section>
+          </div>
+
           {/* End Call Button */}
           <div className="call-bottom-action">
+            <span className="call-footer-note">TIET College Assistant</span>
+            <div className="call-end-control">
             <motion.button
               className="call-end-btn"
               onClick={handleEndCall}
+              aria-label="End call"
               whileHover={{ scale: 1.06 }}
               whileTap={{ scale: 0.94 }}
             >
@@ -512,7 +517,9 @@ const startCallSession = useCallback(async () => {
                 <line x1="23" y1="1" x2="1" y2="23" />
               </svg>
             </motion.button>
-            <span className="call-end-label">End Call</span>
+            <span className="call-end-label">End call</span>
+            </div>
+            <span className="call-footer-note call-footer-hint">Just talk. Scout is here.</span>
           </div>
         </div>
       </motion.div>
