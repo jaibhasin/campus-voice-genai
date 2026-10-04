@@ -19,7 +19,7 @@ function float32ToPcm16(float32Array) {
 
 
 /**
- * CallOverlay — Full-screen hands-free voice call with Scout.
+ * CallOverlay - Full-screen hands-free voice call with Scout.
  *
  * Features:
  * 1. Multilingual matching (STT language detection passed through to TTS and agent).
@@ -124,7 +124,6 @@ const sendTextToBackendTTS = useCallback((text, lang) => {
     sendTextToBackendTTS(checkInText, currentLang);
   }, [sendTextToBackendTTS]);
 
-  // ── Convert Float32 PCM to 16-bit PCM bytes ──
 // ── Start raw PCM audio capture → WebSocket ──
 const startAudioCapture = useCallback((stream, ws) => {
   // Use default AudioContext sample rate (browser picks its native rate).
