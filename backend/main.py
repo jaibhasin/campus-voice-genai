@@ -71,8 +71,12 @@ async def lifespan(app: FastAPI):
     else:
         print("[BOOT] SARVAM_API_KEY not set — voice features disabled")
 
-    yield
-    print("[SHUTDOWN] Cleaning up...")
+    try:
+        yield
+    finally:
+        print("[SHUTDOWN] Cleaning up...")
+        await agent_instance.aclose()
+        await voice_agent_instance.aclose()
 
 
 # ──────────────────────────────────────────────
@@ -137,8 +141,8 @@ async def chat(req: ChatRequest):
     Stream agent response as Server-Sent Events (SSE).
 
     The frontend sends a user message + thread_id.
-    The agent processes it through the LangGraph pipeline (with tool calling
-    via OpenRouter API) and streams back events:
+    The agent retrieves local evidence through Jev decisions, then streams
+    the OpenRouter answer through LangGraph:
 
     Event types:
         - token:     { "type": "token",     "content": "..." }
