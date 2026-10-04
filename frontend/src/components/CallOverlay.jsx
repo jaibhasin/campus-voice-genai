@@ -15,22 +15,32 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
  */
 export default function CallOverlay({ isOpen, onClose }) {
   const [callState, setCallState] = useState("connecting");
+  const [connectionError, setConnectionError] = useState("");
   // "connecting" | "listening" | "processing" | "thinking" | "speaking"
 
   const [callMessages, setCallMessages] = useState([]);
   const [callDuration, setCallDuration] = useState(0);
-
-  const mediaRecorderRef = useRef(null);
-  const streamRef = useRef(null);
-  const chunksRef = useRef([]);
-  const analyserRef = useRef(null);
-  const audioRef = useRef(null);
+  const wsRef = useRef(null);                     // WebSocket connection
+  const audioCtxRef = useRef(null);               // AudioContext for mic capture
+  const processorRef = useRef(null);              // ScriptProcessor for raw PCM
+  const micStreamRef = useRef(null);              // Mic stream
   const activeRef = useRef(false);
   const threadIdRef = useRef(crypto.randomUUID());
   const durationTimerRef = useRef(null);
   const inactivityTimerRef = useRef(null);
   const detectedLanguageRef = useRef("en-IN");
   const messagesEndRef = useRef(null);
+
+  // Audio playback queue (sequential decoded audio buffers, gapless playback via Web Audio API)
+  const audioPlaybackQueue = useRef([]);
+  const isPlayingAudioRef = useRef(false);
+  const playbackSourceRef = useRef(null);         // Current AudioBufferSourceNode
+  const playbackSourcesRef = useRef(new Set());  // All scheduled sources
+  const playbackGenerationRef = useRef(0);        // Invalidates old finish timers
+  const playbackDecodeChainRef = useRef(Promise.resolve()); // Preserves audio chunk order
+  const playbackStartTimeRef = useRef(0);          // When current playback started (context time)
+  const playbackCtxRef = useRef(null);              // Shared AudioContext for playback
+
 
   // Auto-scroll transcript container to bottom
   useEffect(() => {
@@ -42,6 +52,7 @@ export default function CallOverlay({ isOpen, onClose }) {
     if (isOpen) {
       setCallDuration(0);
       setCallMessages([]);
+      setConnectionError("");
       detectedLanguageRef.current = "en-IN";
       durationTimerRef.current = setInterval(() => {
         setCallDuration((d) => d + 1);
@@ -62,58 +73,16 @@ export default function CallOverlay({ isOpen, onClose }) {
     return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
   };
 
-  // ── Silence Detection for Active Speech ──
-  const startSilenceDetection = useCallback((stream) => {
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      analyserRef.current = { analyser, audioCtx };
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      let silenceStart = null;
-      const SILENCE_THRESHOLD = 15;
-      const SILENCE_DURATION = 1800; // ms
-
-      const check = () => {
-        if (!activeRef.current) return;
-
-        analyser.getByteFrequencyData(dataArray);
-        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-
-        if (avg < SILENCE_THRESHOLD) {
-          if (!silenceStart) silenceStart = Date.now();
-          else if (Date.now() - silenceStart > SILENCE_DURATION) {
-            if (mediaRecorderRef.current?.state === "recording") {
-              mediaRecorderRef.current.stop();
-            }
-            return;
-          }
-        } else {
-          silenceStart = null;
-        }
-
-        requestAnimationFrame(check);
-      };
-
-      setTimeout(() => requestAnimationFrame(check), 600);
-    } catch (e) {
-      console.error("Silence detection error:", e);
-    }
-  }, []);
-
-  // ── 30-Second Inactivity Check-in Prompt ──
+// ── 30-Second Inactivity Check-in Prompt ──
   const handleInactivityPrompt = useCallback(async () => {
-    if (!activeRef.current) return;
+    if (!activeRef.current || !wsRef.current) return;
 
     const currentLang = detectedLanguageRef.current || "en-IN";
     const checkInText = currentLang.startsWith("hi")
       ? "मैं अभी भी आपकी बात सुन रहा हूँ! थापर यूनिवर्सिटी के बारे में आपका कोई भी सवाल है, तो आप पूछ सकते हैं।"
       : "I'm still here on call! Feel free to ask any question about admissions, fees, hostel, or campus life at TIET.";
 
-    // Append to conversation log
     const msgId = crypto.randomUUID();
     setCallMessages((prev) => [
       ...prev,
@@ -122,307 +91,303 @@ export default function CallOverlay({ isOpen, onClose }) {
 
     setCallState("speaking");
 
-    try {
-      const ttsResp = await fetch(`${API_URL}/api/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: checkInText,
-          language_code: currentLang,
-          speaker: "shubh",
-          model: "bulbul:v3",
-        }),
-      });
-      const ttsData = await ttsResp.json();
+    // Use the same TTS helper as agent responses
+    sendTextToBackendTTS(checkInText, currentLang);
+  }, []);  
 
-      if (ttsData.audio_base64 && activeRef.current) {
-        const audioSrc = `data:audio/wav;base64,${ttsData.audio_base64}`;
-        const audio = new Audio(audioSrc);
-        audioRef.current = audio;
+  // ── Convert Float32 PCM to 16-bit PCM bytes ──
+function float32ToPcm16(float32Array) {
+  const len = float32Array.length;
+  const buffer = new ArrayBuffer(len * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < len; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Uint8Array(buffer);
+}
 
-        audio.onended = () => {
-          if (activeRef.current) startListening();
-        };
-        audio.onerror = () => {
-          if (activeRef.current) startListening();
-        };
+// ── Send text to backend TTS over WebSocket ──
+const sendTextToBackendTTS = useCallback((text, lang) => {
+  if (!wsRef.current) return;
+  wsRef.current.send(JSON.stringify({
+    type: "tts",
+    text: text,
+    language_code: lang || "en-IN",
+  }));
+}, []);
 
-        await audio.play();
+// ── Start raw PCM audio capture → WebSocket ──
+function startAudioCapture(stream, ws) {
+  // Use default AudioContext sample rate (browser picks its native rate).
+  // We'll resample to 16 kHz ourselves rather than trusting the hint.
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtxRef.current = audioCtx;
+  const inputSampleRate = audioCtx.sampleRate;
+  const targetSampleRate = 16000;
+  const resampleRatio = targetSampleRate / inputSampleRate;
+
+  const source = audioCtx.createMediaStreamSource(stream);
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.value = 1;
+  source.connect(gainNode);
+
+  // ScriptProcessor is deprecated but still widely supported
+  // AudioWorklet is the modern alternative if you want lower latency
+  const bufferSize = 4096;
+  const processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+  processorRef.current = processor;
+
+  // Accumulate samples for resampling (linear interpolation)
+  let accumBuffer = [];
+
+  processor.onaudioprocess = (e) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    const inputData = e.inputBuffer.getChannelData(0);
+    accumBuffer.push(...inputData);
+
+    // Resample accumulated samples to 16 kHz using linear interpolation
+    const totalSamples = accumBuffer.length;
+    const outputLen = Math.floor(totalSamples * resampleRatio);
+    if (outputLen < 1) return; // not enough samples yet
+
+    const output = new Float32Array(outputLen);
+    for (let i = 0; i < outputLen; i++) {
+      const srcIdx = i / resampleRatio;
+      const idxLow = Math.floor(srcIdx);
+      const frac = srcIdx - idxLow;
+      if (idxLow + 1 < totalSamples) {
+        output[i] = accumBuffer[idxLow] + frac * (accumBuffer[idxLow + 1] - accumBuffer[idxLow]);
       } else {
-        if (activeRef.current) startListening();
+        output[i] = accumBuffer[idxLow] || 0;
       }
-    } catch (err) {
-      console.error("Inactivity prompt TTS error:", err);
-      if (activeRef.current) startListening();
     }
-  }, []);
 
-  // ── Start Listening Loop ──
-  const startListening = useCallback(async () => {
-    if (!activeRef.current) return;
+    // Keep any leftover samples for next callback
+    const consumed = Math.floor(outputLen / resampleRatio);
+    accumBuffer = accumBuffer.slice(consumed);
 
-    setCallState("listening");
-    chunksRef.current = [];
+    const pcm16Bytes = float32ToPcm16(output);
+    ws.send(pcm16Bytes);
+  };
 
-    // Set 30-second timer for user response inactivity
+  gainNode.connect(processor);
+  processor.connect(audioCtx.destination);
+}
+
+// ── Audio playback queue (gapless via Web Audio API) ──
+function playAudioChunk(arrayBuffer) {
+  const playbackGeneration = playbackGenerationRef.current;
+  if (!playbackCtxRef.current) {
+    playbackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    playbackStartTimeRef.current = playbackCtxRef.current.currentTime;
+  }
+  const ctx = playbackCtxRef.current;
+
+  playbackDecodeChainRef.current = playbackDecodeChainRef.current.then(async () => {
+    if (playbackGeneration !== playbackGenerationRef.current) return;
+    try {
+      const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      if (playbackGeneration !== playbackGenerationRef.current) return;
+
+      isPlayingAudioRef.current = true;
+      setCallState("speaking");
+      const scheduleTime = Math.max(ctx.currentTime + 0.02, playbackStartTimeRef.current);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      playbackSourcesRef.current.add(source);
+      playbackStartTimeRef.current = scheduleTime + buffer.duration;
+      playbackSourceRef.current = source;
+      source.onended = () => {
+        playbackSourcesRef.current.delete(source);
+        if (playbackSourcesRef.current.size === 0) {
+          playbackSourceRef.current = null;
+          isPlayingAudioRef.current = false;
+          setCallState("listening");
+        }
+      };
+      source.start(scheduleTime);
+    } catch (e) {
+      console.warn("[Playback] Failed to decode audio chunk:", e);
+    }
+  });
+}
+
+// Stop speech immediately when the user starts talking and discard buffered audio.
+function stopPlaybackForBargeIn() {
+  playbackGenerationRef.current += 1;
+  audioPlaybackQueue.current.length = 0;
+  playbackDecodeChainRef.current = Promise.resolve();
+  for (const source of playbackSourcesRef.current) {
+    try { source.stop(); } catch (_) {}
+    try { source.disconnect(); } catch (_) {}
+  }
+  playbackSourcesRef.current.clear();
+  playbackSourceRef.current = null;
+  playbackStartTimeRef.current = 0;
+  isPlayingAudioRef.current = false;
+}
+
+// ── Start WebSocket Call (replaces old startListening) ──
+const startCallSession = useCallback(async () => {
+  if (!activeRef.current) return;
+
+  setCallState("connecting");
+
+  // 1. Get mic stream for raw PCM capture
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+    micStreamRef.current = stream;
+
+    // 2. Open WebSocket
+    const wsUrl = API_URL.replace(/^http/, "ws") + "/api/voice/ws";
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    ws.binaryType = "arraybuffer";
+
+    // Send partial transcript updates to state
+    let assistantMsgId = null;
+
+    ws.onopen = () => {
+      setCallState("connecting");
+      ws.send(JSON.stringify({
+        type: "start_call",
+        thread_id: threadIdRef.current,
+      }));
+      startAudioCapture(stream, ws);
+    };
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        // Binary audio chunk from TTS — play it
+        playAudioChunk(event.data);
+      } else {
+        // JSON event
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case "voice_ready":
+              setCallState("listening");
+              break;
+
+            case "voice_error":
+              console.error("Voice service error:", msg.message);
+              setConnectionError(msg.message || "Unable to connect to the voice service.");
+              setCallState("error");
+              activeRef.current = false;
+              clearTimeout(inactivityTimerRef.current);
+              if (micStreamRef.current) {
+                micStreamRef.current.getTracks().forEach((track) => track.stop());
+                micStreamRef.current = null;
+              }
+              break;
+
+            case "partial_transcript":
+              // Optionally show partial transcript in UI
+              break;
+
+            case "transcript":
+              // Final transcript — add user message
+              // Also store detected language for TTS
+              if (msg.language_code) {
+                detectedLanguageRef.current = msg.language_code;
+              }
+              const userMsgId = crypto.randomUUID();
+              setCallMessages((prev) => [
+                ...prev,
+                { id: userMsgId, role: "user", text: msg.text },
+              ]);
+              // Create placeholder for assistant
+              assistantMsgId = crypto.randomUUID();
+              setCallMessages((prev) => [
+                ...prev,
+                { id: assistantMsgId, role: "assistant", text: "" },
+              ]);
+              setCallState("thinking");
+              break;
+
+            case "agent_token":
+              if (assistantMsgId) {
+                setCallMessages((prev) => prev.map((message) =>
+                  message.id === assistantMsgId
+                    ? { ...message, text: message.text + (msg.content || "") }
+                    : message
+                ));
+              }
+              break;
+
+            case "agent_done":
+              if (assistantMsgId && msg.full_content) {
+                setCallMessages((prev) => prev.map((message) =>
+                  message.id === assistantMsgId && !message.text
+                    ? { ...message, text: msg.full_content }
+                    : message
+                ));
+              }
+              break;
+
+            case "vad_speech_start":
+              stopPlaybackForBargeIn();
+              setCallState("listening");
+              break;
+
+            case "vad_speech_end":
+            case "speech_end":
+              // Sarvam detected end of speech and is preparing the final transcript
+              setCallState("processing");
+              break;
+          }
+        } catch (e) {
+          // ignore parse errors
+        }
+      }
+    };
+
+    ws.onclose = () => {
+      if (activeRef.current) {
+        handleEndCall();
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      handleEndCall();
+    };
+
+    // Set 60s total inactivity timeout (simpler than the old 30s prompt)
     clearTimeout(inactivityTimerRef.current);
     inactivityTimerRef.current = setTimeout(() => {
-      if (activeRef.current && mediaRecorderRef.current?.state === "recording") {
-        console.log("[Inactivity] 30s elapsed without user speech");
-        mediaRecorderRef.current.stop();
+      if (activeRef.current) {
         handleInactivityPrompt();
       }
-    }, 30000);
+    }, 60000);
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
-
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = async () => {
-        // Clear 30s timer since recording stopped
-        clearTimeout(inactivityTimerRef.current);
-
-        // Stop current mic stream to prevent feedback
-        stream.getTracks().forEach((t) => t.stop());
-
-        if (!activeRef.current) return;
-
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-
-        // Ignore noise / tiny silence clips
-        if (blob.size < 1000) {
-          if (activeRef.current) startListening();
-          return;
-        }
-
-        // ── 1. Speech-to-Text (STT) ──
-        setCallState("processing");
-        try {
-          const formData = new FormData();
-          formData.append("file", blob, "recording.webm");
-
-          const sttResp = await fetch(`${API_URL}/api/stt`, {
-            method: "POST",
-            body: formData,
-          });
-          const sttData = await sttResp.json();
-
-          if (!sttData.transcript || !sttData.transcript.trim()) {
-            if (activeRef.current) startListening();
-            return;
-          }
-
-          // Save detected spoken language (e.g., hi-IN, en-IN)
-          if (sttData.language_code) {
-            detectedLanguageRef.current = sttData.language_code;
-          }
-
-          const userText = sttData.transcript.trim();
-
-          // Append user turn to persistent conversation log
-          const userMsgId = crypto.randomUUID();
-          setCallMessages((prev) => [
-            ...prev,
-            { id: userMsgId, role: "user", text: userText },
-          ]);
-
-          // ── 2. Chat Agent (SSE) + Sentence-Level TTS Streaming ──
-          setCallState("thinking");
-          const assistantMsgId = crypto.randomUUID();
-
-          // Append empty bot placeholder
-          setCallMessages((prev) => [
-            ...prev,
-            { id: assistantMsgId, role: "assistant", text: "" },
-          ]);
-
-          const chatResp = await fetch(`${API_URL}/api/chat/voice`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              message: userText,
-              thread_id: threadIdRef.current,
-            }),
-          });
-
-          const reader = chatResp.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let fullResponse = "";
-
-          // Sentence-level TTS: collect sentences and fire TTS early
-          const audioQueue = [];      // Queue of Audio objects to play sequentially
-          let ttsInFlight = 0;        // Number of TTS requests in flight
-          let streamDone = false;      // Agent stream finished
-          let isPlaying = false;       // Currently playing audio
-          let sentText = "";           // Text already sent to TTS
-          const sentenceSplitRe = /(?<=[.!?।\n])\s+/;
-
-          // Helper: clean text for TTS
-          const cleanForTTS = (text) =>
-            text
-              .replace(/\[OPTIONS\][\s\S]*?\[\/OPTIONS\]/g, "")
-              .replace(/\*\*(.*?)\*\*/g, "$1")
-              .replace(/\*(.*?)\*/g, "$1")
-              .replace(/`(.*?)`/g, "$1")
-              .replace(/[#>*_~`]/g, "")
-              .trim();
-
-          // Helper: play next audio in queue
-          const playNext = () => {
-            if (!activeRef.current || audioQueue.length === 0) {
-              isPlaying = false;
-              // If stream is done and queue is empty and no TTS in flight, start listening
-              if (streamDone && ttsInFlight === 0) {
-                if (activeRef.current) startListening();
-              }
-              return;
-            }
-            isPlaying = true;
-            setCallState("speaking");
-            const audio = audioQueue.shift();
-            audioRef.current = audio;
-            audio.onended = () => playNext();
-            audio.onerror = () => playNext();
-            audio.play().catch(() => playNext());
-          };
-
-          // Helper: send a chunk of text to TTS
-          const fireTTS = async (text) => {
-            const clean = cleanForTTS(text);
-            if (!clean || clean.length < 2) return;
-
-            ttsInFlight++;
-            try {
-              const ttsResp = await fetch(`${API_URL}/api/tts`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  text: clean,
-                  language_code: detectedLanguageRef.current || "en-IN",
-                  speaker: "shubh",
-                  model: "bulbul:v3",
-                }),
-              });
-              const ttsData = await ttsResp.json();
-              if (ttsData.audio_base64 && activeRef.current) {
-                const audioSrc = `data:audio/wav;base64,${ttsData.audio_base64}`;
-                const audio = new Audio(audioSrc);
-                audioQueue.push(audio);
-                if (!isPlaying) playNext();
-              }
-            } catch (err) {
-              console.error("[Sentence TTS Error]", err);
-            } finally {
-              ttsInFlight--;
-              // Check if everything is done
-              if (streamDone && ttsInFlight === 0 && !isPlaying && audioQueue.length === 0) {
-                if (activeRef.current) startListening();
-              }
-            }
-          };
-
-          // Helper: check for complete sentences and fire TTS
-          const trySendSentences = () => {
-            const unsent = fullResponse.slice(sentText.length);
-            const parts = unsent.split(sentenceSplitRe);
-            // Send all complete sentences (all except the last partial one)
-            if (parts.length > 1) {
-              const completeSentences = parts.slice(0, -1).join(" ");
-              sentText += completeSentences;
-              fireTTS(completeSentences);
-            }
-          };
-
-          // Read the SSE stream
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue;
-              const jsonStr = line.slice(6).trim();
-              if (!jsonStr) continue;
-
-              try {
-                const event = JSON.parse(jsonStr);
-                if (event.type === "token") {
-                  fullResponse += event.content;
-                  setCallMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantMsgId
-                        ? { ...msg, text: fullResponse }
-                        : msg
-                    )
-                  );
-                  // Check if we have a complete sentence to TTS
-                  trySendSentences();
-                } else if (event.type === "done") {
-                  fullResponse = event.full_content || fullResponse;
-                  setCallMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantMsgId
-                        ? { ...msg, text: fullResponse }
-                        : msg
-                    )
-                  );
-                }
-              } catch (e) {
-                // skip bad chunks
-              }
-            }
-          }
-
-          // Stream ended — send any remaining unsent text to TTS
-          streamDone = true;
-          const remaining = fullResponse.slice(sentText.length).trim();
-          if (remaining) {
-            fireTTS(remaining);
-          } else if (ttsInFlight === 0 && !isPlaying && audioQueue.length === 0) {
-            // Nothing was sent to TTS at all (empty response)
-            if (activeRef.current) startListening();
-          }
-        } catch (err) {
-          console.error("Call flow error:", err);
-          if (activeRef.current) startListening();
-        }
-      };
-
-      recorder.start();
-      startSilenceDetection(stream);
-    } catch (err) {
-      console.error("Mic access error:", err);
-      handleEndCall();
-    }
-  }, [startSilenceDetection, handleInactivityPrompt]);
-
+  } catch (err) {
+    console.error("Mic access error:", err);
+    handleEndCall();
+  }
+}, [handleInactivityPrompt]);
   // ── Initiate Call Session ──
   useEffect(() => {
     if (isOpen) {
       activeRef.current = true;
       threadIdRef.current = crypto.randomUUID();
-      setTimeout(() => startListening(), 600);
+      setTimeout(() => startCallSession(), 600);
     }
     return () => {
       activeRef.current = false;
       clearTimeout(inactivityTimerRef.current);
     };
-  }, [isOpen, startListening]);
+  }, [isOpen, startCallSession]);
 
   // ── Terminate Call Session ──
   const handleEndCall = useCallback(() => {
@@ -430,20 +395,32 @@ export default function CallOverlay({ isOpen, onClose }) {
     setCallState("connecting");
     clearTimeout(inactivityTimerRef.current);
 
-    if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
-    }
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
+    // Close WebSocket
+    if (wsRef.current) {
+      wsRef.current.send(JSON.stringify({ type: "end_call" }));
+      wsRef.current.close();
+      wsRef.current = null;
     }
 
-    if (analyserRef.current?.audioCtx) {
-      analyserRef.current.audioCtx.close();
-      analyserRef.current = null;
+    // Stop mic
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+
+    // Stop audio playback & clear queue
+    stopPlaybackForBargeIn();
+
+    // Close Playback AudioContext (separate from mic capture context)
+    if (playbackCtxRef.current) {
+      playbackCtxRef.current.close();
+      playbackCtxRef.current = null;
+    }
+
+    // Close AudioContext
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
     }
 
     onClose();
@@ -489,6 +466,7 @@ export default function CallOverlay({ isOpen, onClose }) {
             {/* Current Dynamic Status */}
             <div className="call-status-text">
               {callState === "connecting" && "Connecting..."}
+              {callState === "error" && `❌ ${connectionError}`}
               {callState === "listening" && "🎤 Listening... speak freely"}
               {callState === "processing" && "⏳ Transcribing audio..."}
               {callState === "thinking" && "💭 Scout is thinking..."}

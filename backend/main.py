@@ -15,15 +15,19 @@ import base64
 import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sarvamai import SarvamAI
 
+
+
 # Ensure project root is on sys.path so `Agent` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -306,3 +310,9 @@ async def text_to_speech(req: TTSRequest):
     except Exception as e:
         return {"error": f"TTS failed: {str(e)}"}
 
+
+
+@app.websocket("/api/voice/ws")
+async def voice_websocket_endpoint(websocket: WebSocket):
+    from backend.voice_pipeline import voice_pipeline
+    await voice_pipeline(websocket, voice_agent_instance)

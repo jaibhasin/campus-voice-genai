@@ -3,15 +3,8 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 def get_secret(key: str) -> str:
-    """Get a secret from env vars (local) or st.secrets (Streamlit Cloud)."""
-    val = os.getenv(key)
-    if val:
-        return val
-    try:
-        import streamlit as st
-        return st.secrets.get(key, "")
-    except Exception:
-        return ""
+    """Get a secret from the environment (loaded from .env or system env)."""
+    return os.getenv(key, "")
 from pydantic import BaseModel
 from typing import List, Annotated
 from langgraph.graph import StateGraph, END, START
@@ -127,6 +120,46 @@ class Agent():
             # Report tool results as they happen
             elif isinstance(chunk, ToolMessage):
                 # Tool result came back — find the matching tool call and update args
+                for tc in tool_calls_log:
+                    if tc["name"] == chunk.name and tc["args"] == "":
+                        tc["args"] = str(chunk.content)[:100]
+                yield {"type": "tool_call", "name": chunk.name, "args": str(chunk.content)[:100]}
+
+        yield {"type": "done", "full_content": final_content, "tool_calls": tool_calls_log}
+
+    async def astream(self, query: str, **kwargs):
+        """
+        Async version of stream() — yields dict events asynchronously.
+
+        Yields:
+            dict: Same event types as stream().
+        """
+        import asyncio
+
+        tool_calls_log = []
+        final_content = ""
+
+        # LangGraph's astream events work with stream_mode="messages"
+        async for chunk, metadata in self.runnable.astream(
+            {"messages": [HumanMessage(content=query)]},
+            stream_mode="messages",
+            **kwargs,
+        ):
+            if isinstance(chunk, AIMessageChunk):
+                if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
+                    for tc in chunk.tool_call_chunks:
+                        if tc.get("name"):
+                            tool_calls_log.append({
+                                "name": tc["name"],
+                                "args": tc.get("args", ""),
+                            })
+                elif chunk.content:
+                    final_content += chunk.content
+                    yield {"type": "token", "content": chunk.content}
+                    # Yield control so TTS can start streaming earlier
+                    await asyncio.sleep(0)
+
+            elif isinstance(chunk, ToolMessage):
                 for tc in tool_calls_log:
                     if tc["name"] == chunk.name and tc["args"] == "":
                         tc["args"] = str(chunk.content)[:100]

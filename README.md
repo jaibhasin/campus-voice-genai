@@ -1,10 +1,38 @@
-#To run production version
+# TIET Chat Bot
 
-1. Activate venv
-2. Run npm run dev. cd /frontend
-3. Run uvicorn main:app --reload --port 8000 #cd/backend
+## Run the frontend
 
-#To run the Streamlit version
+From the project root:
 
-1. Activate venv
-2. Run streamlit run app.py
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend runs at `http://localhost:3000`.
+
+## Run the backend
+
+From the project root, create the uv environment and install the Python dependencies:
+
+```bash
+uv venv
+uv pip install -r requirements.txt
+```
+
+Start the FastAPI backend in a separate terminal:
+
+```bash
+uv run uvicorn backend.main:app --reload --port 8000
+```
+
+The backend runs at `http://localhost:8000`.
+
+## Environment variables
+
+Configure the required API keys in a `.env` file in the project root.
+
+The backend uses `OPENROUTER_API_KEY` for the language model and `SARVAM_API_KEY` for voice features.
+
+
