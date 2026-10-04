@@ -4,7 +4,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-
 DATA_DIR = Path(__file__).resolve().parent.parent / "pageindex_data"
 
 
@@ -61,14 +60,33 @@ class DocumentStore:
         for name, data in sorted(documents.items()):
             sources = []
 
-            def add_text(title, text, summary="", page=None, node_id=None):
+            def add_text(
+                title,
+                text,
+                summary="",
+                page=None,
+                node_id=None,
+                sources=sources,
+                document=name,
+            ):
                 parts = text_parts(text)
                 for index, part in enumerate(parts, 1):
-                    label = f"{title} (part {index}/{len(parts)})" if len(parts) > 1 else title
-                    sources.append(self._add(
-                        kind="source", document=name, title=label,
-                        summary=summary[:400], page=page, node_id=node_id, text=part,
-                    ))
+                    label = (
+                        f"{title} (part {index}/{len(parts)})"
+                        if len(parts) > 1
+                        else title
+                    )
+                    sources.append(
+                        self._add(
+                            kind="source",
+                            document=document,
+                            title=label,
+                            summary=summary[:400],
+                            page=page,
+                            node_id=node_id,
+                            text=part,
+                        )
+                    )
 
             def visit(nodes, ancestors=()):
                 for node in nodes:
@@ -76,7 +94,8 @@ class DocumentStore:
                     text = node.get("text") or ""
                     if text.strip():
                         add_text(
-                            " / ".join(title), text,
+                            " / ".join(title),
+                            text,
                             node.get("prefix_summary") or node.get("summary") or "",
                             node.get("page_index", node.get("start_index")),
                             node.get("node_id"),
@@ -92,25 +111,38 @@ class DocumentStore:
                     add_text(f"Page {number}", text, text[:200], page=number)
 
             # Wide outlines stay reachable through explicit groups, never truncation.
-            if len(sources) > 120:
-                sources = [self._add(
-                    kind="outline", document=name,
-                    title=f"Sections and pages {offset + 1}-{min(offset + 120, len(sources))}",
-                    children=tuple(sources[offset:offset + 120]),
-                ) for offset in range(0, len(sources), 120)]
+            while len(sources) > 120:
+                sources = [
+                    self._add(
+                        kind="outline",
+                        document=name,
+                        title=f"Sections and pages {offset + 1}-{min(offset + 120, len(sources))}",
+                        children=tuple(sources[offset : offset + 120]),
+                    )
+                    for offset in range(0, len(sources), 120)
+                ]
             metadata = data.get("metadata", {})
-            self.roots.append(self._add(
-                kind="outline", document=name, title=metadata.get("name") or name,
-                summary=(metadata.get("description") or "")[:400],
-                children=tuple(sources),
-            ))
+            self.roots.append(
+                self._add(
+                    kind="outline",
+                    document=name,
+                    title=metadata.get("name") or name,
+                    summary=(metadata.get("description") or "")[:400],
+                    children=tuple(sources),
+                )
+            )
         # Also bound the initial menu when the corpus grows beyond one Choice.
         while len(self.roots) > 120:
             roots = self.roots
-            self.roots = [self._add(
-                kind="outline", document="", title=f"Documents {offset + 1}-{min(offset + 120, len(roots))}",
-                children=tuple(roots[offset:offset + 120]),
-            ) for offset in range(0, len(roots), 120)]
+            self.roots = [
+                self._add(
+                    kind="outline",
+                    document="",
+                    title=f"Documents {offset + 1}-{min(offset + 120, len(roots))}",
+                    children=tuple(roots[offset : offset + 120]),
+                )
+                for offset in range(0, len(roots), 120)
+            ]
 
     def _add(self, **fields) -> str:
         target_id = f"t{len(self.targets):05d}"
@@ -119,6 +151,8 @@ class DocumentStore:
 
     @classmethod
     def load(cls, directory: Path = DATA_DIR):
-        documents = {path.stem: json.loads(path.read_text(encoding="utf-8"))
-                     for path in sorted(directory.glob("*.json"))}
+        documents = {
+            path.stem: json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(directory.glob("*.json"))
+        }
         return cls(documents)
