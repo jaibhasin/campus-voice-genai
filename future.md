@@ -1,0 +1,3 @@
+- Use AnyDoc to crawl TIET’s official website and convert its PDFs, then index the content with PageIndex.
+- Add deadline and notice alerts so users can follow their programme and receive relevant counselling, payment, and hostel updates from TIET’s official admissions page.
+- Add voice-assisted application filling so students can provide details conversationally, review an editable draft, and fill TIET’s official application form where supported, while confirming submission and handling OTPs and payments themselves.
