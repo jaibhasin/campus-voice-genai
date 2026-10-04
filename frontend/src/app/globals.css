@@ -1064,6 +1064,28 @@ html, body {
   backdrop-filter: blur(32px);
   overflow: auto;
 }
+/* Voice-lit glass stays around the perimeter, clear of text and controls. */
+.call-screen::before, .call-screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: var(--voice-edge-glow, 0);
+}
+.call-screen::before {
+  padding: 1px;
+  background: conic-gradient(from var(--voice-edge-angle, 0deg), #fff, #444 15%, #c8cdd2 30%, #161616 45%, #fff 60%, #505458 75%, #fff);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+}
+.call-screen::after {
+  background: radial-gradient(ellipse at 0% 0%, #e8edf024, transparent 28%), radial-gradient(ellipse at 100% 100%, #fff1, transparent 28%);
+  box-shadow: inset 0 0 24px #f2f5f830, inset 0 0 70px #e4e9ec12;
+}
+.call-screen > * { position: relative; z-index: 1; }
 .call-top-bar, .call-brand, .call-session {
   display: flex;
   align-items: center;

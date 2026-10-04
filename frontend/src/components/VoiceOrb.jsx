@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 
 // Draw outside React's render loop so audio can animate without rerendering the call.
-export default function VoiceOrb({ state, analyserRef }) {
+export default function VoiceOrb({ state, analyserRef, surfaceRef }) {
   const canvasRef = useRef(null);
   const stateRef = useRef(state);
   const pointerRef = useRef({ x: 0, y: 0 });
@@ -28,6 +28,8 @@ export default function VoiceOrb({ state, analyserRef }) {
     let size = 0;
     let frame;
     let energy = 0;
+    let edgeGlow = 0;
+    const surface = surfaceRef?.current;
     let previousTime = 0;
     let time = 0;
     const resize = () => {
@@ -53,6 +55,12 @@ export default function VoiceOrb({ state, analyserRef }) {
       const delta = previousTime ? Math.min((now - previousTime) / 1000, 0.05) : 0;
       previousTime = now;
       if (!reducedMotion.matches) time += delta * (speaking ? 1.6 + energy * 2 : busy ? 0.8 : 0.3);
+      // Share the same smoothed voice energy with the surrounding glass frame.
+      edgeGlow += ((speaking && !reducedMotion.matches ? 0.2 + energy * 0.65 : 0) - edgeGlow) * 0.08;
+      if (surface) {
+        surface.style.setProperty("--voice-edge-glow", edgeGlow.toFixed(3));
+        surface.style.setProperty("--voice-edge-angle", `${(time * 24) % 360}deg`);
+      }
       const radius = size * (0.27 + energy * 0.025);
       ctx.clearRect(0, 0, size, size);
       ctx.save();
@@ -134,8 +142,13 @@ export default function VoiceOrb({ state, analyserRef }) {
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [analyserRef]);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      surface?.style.removeProperty("--voice-edge-glow");
+      surface?.style.removeProperty("--voice-edge-angle");
+    };
+  }, [analyserRef, surfaceRef]);
 
   return <canvas
     ref={canvasRef}
