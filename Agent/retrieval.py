@@ -4,9 +4,9 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
-from langsmith import traceable
+from langsmith import get_current_run_tree, traceable
 from typesafe_sdk import TypeSafeError
 
 from .documents import DocumentStore
@@ -58,6 +58,10 @@ class RetrievalResult:
     limitation: str = ""
 
 
+def _trace_result(result):
+    return asdict(result) if result is not None else {}
+
+
 ACTION_QUESTION = {
     "type": "choice",
     "instructions": (
@@ -88,9 +92,17 @@ class Retriever:
         self.client = client if client is not None else JevClient()
         self.limits = limits if limits is not None else RetrievalLimits.from_env()
 
-    @traceable(name="fetch_local_source", process_inputs=_trace_inputs)
+    @traceable(
+        name="fetch_local_source",
+        run_type="tool",
+        process_inputs=_trace_inputs,
+        tags=["pageindex", "local"],
+    )
     def fetch(self, target_id):
         target = self.store.targets[target_id]
+        run = get_current_run_tree()
+        if run is not None:
+            run.metadata.update(target.description())
         if target.kind == "outline":
             return {
                 "target_id": target_id,
@@ -282,7 +294,12 @@ class Retriever:
             "round_limit", "Retrieval round limit reached; evidence may be incomplete."
         )
 
-    @traceable(name="jev_retrieval", process_inputs=_trace_inputs)
+    @traceable(
+        name="jev_retrieval",
+        process_inputs=_trace_inputs,
+        process_outputs=_trace_result,
+        tags=["retrieval"],
+    )
     def run(self, question, conversation, on_fetch=None):
         steps = self._steps(question, conversation, on_fetch)
         response = None
@@ -297,7 +314,12 @@ class Retriever:
                 # Do not copy SDK exception strings, headers, or secrets into model context.
                 return self._failed(state, type(error).__name__)
 
-    @traceable(name="jev_retrieval", process_inputs=_trace_inputs)
+    @traceable(
+        name="jev_retrieval",
+        process_inputs=_trace_inputs,
+        process_outputs=_trace_result,
+        tags=["retrieval"],
+    )
     async def arun(self, question, conversation, on_fetch=None):
         steps = self._steps(question, conversation, on_fetch)
         response = None

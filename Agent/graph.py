@@ -14,7 +14,6 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables import RunnableLambda
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -22,6 +21,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
+from .models import OpenRouterChatOpenAI as ChatOpenAI
 from .prompts.prompts import (
     college_answer_system_prompt,
     college_assistant_system_prompt,
@@ -87,6 +87,7 @@ class Agent:
             base_url="https://openrouter.ai/api/v1",
             temperature=temperature,
             streaming=True,
+            stream_usage=True,
         )
         if self.retrieval_mode == "llm":
             self.llm = self.llm.bind_tools(all_tools)
@@ -192,10 +193,22 @@ class Agent:
             }
 
         def answer(state):
-            return {"messages": [self.llm.invoke(self._answer_messages(state))]}
+            return {
+                "messages": [
+                    self.llm.invoke(
+                        self._answer_messages(state), config=self._model_config()
+                    )
+                ]
+            }
 
         async def aanswer(state):
-            return {"messages": [await self.llm.ainvoke(self._answer_messages(state))]}
+            return {
+                "messages": [
+                    await self.llm.ainvoke(
+                        self._answer_messages(state), config=self._model_config()
+                    )
+                ]
+            }
 
         workflow = StateGraph(AgentState)
         workflow.add_node("answer", RunnableLambda(answer, afunc=aanswer))
@@ -215,7 +228,25 @@ class Agent:
             workflow.add_edge("tools", "answer")
         return workflow.compile(checkpointer=MemorySaver())
 
+    def _model_config(self):
+        return {
+            "run_name": "llm_answer" if self.retrieval_mode == "jev" else "llm_agent",
+            "tags": ["openrouter"],
+            "metadata": {"ls_provider": "openrouter", "ls_model_name": self.model},
+        }
+
+    def _run_config(self, config):
+        config = dict(config or {})
+        config.setdefault("run_name", self.name)
+        config["metadata"] = {
+            "agent_name": self.name,
+            "retrieval_mode": self.retrieval_mode,
+            **config.get("metadata", {}),
+        }
+        return config
+
     def invoke(self, query: str, **kwargs):
+        kwargs["config"] = self._run_config(kwargs.get("config"))
         return self.runnable.invoke(
             {"messages": [HumanMessage(content=query)]}, **kwargs
         )
@@ -241,6 +272,7 @@ class Agent:
         return None
 
     def stream(self, query: str, **kwargs):
+        kwargs["config"] = self._run_config(kwargs.get("config"))
         content, calls = "", []
         for mode, payload in self.runnable.stream(
             {"messages": [HumanMessage(content=query)]},
@@ -258,6 +290,7 @@ class Agent:
         yield {"type": "done", "full_content": content, "tool_calls": calls}
 
     async def astream(self, query: str, **kwargs):
+        kwargs["config"] = self._run_config(kwargs.get("config"))
         content, calls = "", []
         async for mode, payload in self.runnable.astream(
             {"messages": [HumanMessage(content=query)]},

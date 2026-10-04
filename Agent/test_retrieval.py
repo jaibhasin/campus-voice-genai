@@ -280,9 +280,17 @@ class JevTransportTests(unittest.TestCase):
                 jev.decide({"question": "Hostel fees?"}, questions, 1)
             self.assertEqual(created.call_count, 1)
             self.assertEqual(created.call_args.kwargs["name"], "jev_decision")
+            self.assertEqual(created.call_args.kwargs["run_type"], "llm")
             self.assertIn("questions", created.call_args.kwargs["inputs"])
             self.assertNotIn("self", created.call_args.kwargs["inputs"])
             self.assertIn("ready_to_answer", str(updated.call_args.kwargs["outputs"]))
+            self.assertEqual(
+                updated.call_args.kwargs["outputs"]["usage_metadata"],
+                {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+            )
+            metadata = updated.call_args.kwargs["extra"]["metadata"]
+            self.assertEqual(metadata["ls_provider"], "typesafe")
+            self.assertEqual(metadata["ls_model_name"], "jev-1.13.0")
             self.assertNotIn("credential-must-not-appear", str(created.call_args))
             self.assertNotIn("credential-must-not-appear", str(updated.call_args))
         finally:
