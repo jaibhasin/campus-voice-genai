@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 import httpx2
+from langsmith import Client as LangSmithClient
+from langsmith import tracing_context
 from typesafe_sdk import RetryPolicy, TypeSafeClient
 
 from Agent.documents import DocumentStore
@@ -244,6 +246,49 @@ class RetrievalAsyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JevTransportTests(unittest.TestCase):
+    def test_langsmith_records_jev_inputs_and_decision_without_credentials(self):
+        trace_client = LangSmithClient(
+            api_key="local-tracing-key", auto_batch_tracing=False
+        )
+        jev = JevClient(api_key="credential-must-not-appear")
+        jev._sync = TypeSafeClient(
+            api_key="credential-must-not-appear",
+            transport=httpx2.MockTransport(
+                lambda request: httpx2.Response(
+                    200, json=answer("ready_to_answer", "source")
+                )
+            ),
+        )
+        questions = {
+            "action": {
+                "type": "choice",
+                "instructions": "Continue?",
+                "criteria": {"read_more": None, "ready_to_answer": None},
+            },
+            "next_read": {
+                "type": "choice",
+                "instructions": "Where?",
+                "criteria": {"source": None},
+            },
+        }
+        try:
+            with (
+                patch.object(LangSmithClient, "create_run") as created,
+                patch.object(LangSmithClient, "update_run") as updated,
+                tracing_context(enabled=True, client=trace_client),
+            ):
+                jev.decide({"question": "Hostel fees?"}, questions, 1)
+            self.assertEqual(created.call_count, 1)
+            self.assertEqual(created.call_args.kwargs["name"], "jev_decision")
+            self.assertIn("questions", created.call_args.kwargs["inputs"])
+            self.assertNotIn("self", created.call_args.kwargs["inputs"])
+            self.assertIn("ready_to_answer", str(updated.call_args.kwargs["outputs"]))
+            self.assertNotIn("credential-must-not-appear", str(created.call_args))
+            self.assertNotIn("credential-must-not-appear", str(updated.call_args))
+        finally:
+            jev.close()
+            trace_client.close()
+
     def test_sdk_sends_both_questions_in_exactly_one_http_request(self):
         requests = []
 
