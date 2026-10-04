@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -19,6 +19,19 @@ def events(response):
 
 
 class AgentEndpointTests(unittest.TestCase):
+    def test_shutdown_flushes_traces_after_closing_agents(self):
+        chat, voice = AsyncMock(), AsyncMock()
+        with (
+            patch.object(main, "Agent", side_effect=[chat, voice]),
+            patch.object(main, "SarvamAI"),
+            patch.object(main, "wait_for_all_tracers") as flush,
+            TestClient(main.app),
+        ):
+            flush.assert_not_called()
+        chat.aclose.assert_awaited_once()
+        voice.aclose.assert_awaited_once()
+        flush.assert_called_once_with()
+
     def test_chat_endpoint_streams_retrieval_progress_then_answer(self):
         agent, jev, model = make_agent(
             [read_first, read_first, answer("ready_to_answer")]

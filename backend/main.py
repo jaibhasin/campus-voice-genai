@@ -7,6 +7,7 @@ Run from project root:
     uvicorn backend.main:app --reload --port 8000
 """
 
+import asyncio
 import os
 import sys
 import json
@@ -22,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sarvamai import SarvamAI
+from langchain_core.tracers.langchain import wait_for_all_tracers
 
 
 
@@ -75,8 +77,12 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         print("[SHUTDOWN] Cleaning up...")
-        await agent_instance.aclose()
-        await voice_agent_instance.aclose()
+        try:
+            await agent_instance.aclose()
+            await voice_agent_instance.aclose()
+        finally:
+            # Drain buffered traces at shutdown, never on the response path.
+            await asyncio.to_thread(wait_for_all_tracers)
 
 
 # ──────────────────────────────────────────────
