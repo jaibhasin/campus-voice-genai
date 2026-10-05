@@ -17,6 +17,7 @@ from Agent.jev import JevClient, _trace_outputs
 from Agent.models import OpenRouterChatOpenAI
 from Agent.retrieval import Retriever
 from Agent.test_retrieval import answer, documents, read_first
+from Agent.tools import get_node_text
 
 
 @contextmanager
@@ -56,6 +57,7 @@ class HTTPFixture:
         self.jev_requests = []
         self.llm_requests = []
         self.fail_llm = fail_llm
+        self.llm_tool = False
         self.jev = JevClient(api_key="jev-credential-must-not-appear")
         options = {
             "api_key": self.jev.api_key,
@@ -138,6 +140,24 @@ class HTTPFixture:
                 },
             },
         ]
+        if self.llm_tool and len(self.llm_requests) == 1:
+            chunks[0]["choices"][0]["delta"] = {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "read-fees",
+                        "type": "function",
+                        "function": {
+                            "name": "get_node_text",
+                            "arguments": json.dumps(
+                                {"doc_name": "fees", "node_id": "0000"}
+                            ),
+                        },
+                    }
+                ],
+            }
+            chunks[1]["choices"][0].update(delta={}, finish_reason="tool_calls")
         sse = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
         return httpx.Response(
             200,
@@ -212,6 +232,48 @@ class TraceAssertions:
 
 
 class SyncTraceTests(TraceAssertions, unittest.TestCase):
+    def test_legacy_mode_traces_each_llm_invocation_and_native_tool(self):
+        fixture = HTTPFixture()
+        fixture.llm_tool = True
+        source = {
+            "fees": {
+                "tree": {
+                    "result": [
+                        {"node_id": "0000", "text": "Hostel fees are Rs. 50000."}
+                    ]
+                }
+            }
+        }
+        try:
+            with (
+                patch("Agent.graph.ChatOpenAI", return_value=fixture.model),
+                patch("Agent.graph.all_tools", [get_node_text]),
+                patch("Agent.tools._DOCS", source),
+                capture_traces() as spans,
+            ):
+                agent = Agent("Scout", retrieval_mode="llm")
+                events = list(
+                    agent.stream(
+                        "fees", config={"configurable": {"thread_id": "baseline"}}
+                    )
+                )
+            models = named(spans, "llm_agent")
+            self.assertEqual(len(models), 2)
+            self.assertEqual(len(fixture.llm_requests), 2)
+            self.assertEqual(fixture.jev_requests, [])
+            tool = named(spans, "get_node_text")[0]
+            self.assertEqual(tool["run_type"], "tool")
+            self.assertEqual(tool["inputs"], {"doc_name": "fees", "node_id": "0000"})
+            self.assertEqual(
+                tool["outputs"]["output"].content, "Hostel fees are Rs. 50000."
+            )
+            root = named(spans, "Scout")[0]
+            for span in spans.values():
+                self.assertEqual(str(span["trace_id"]), str(root["id"]))
+            self.assertEqual(events[-1]["full_content"], "Grounded answer.")
+        finally:
+            asyncio.run(fixture.aclose())
+
     def test_chat_stream_traces_real_sdk_calls_tools_and_usage(self):
         fixture = HTTPFixture()
         config = {
