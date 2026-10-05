@@ -2,11 +2,24 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import VoiceOrb from "./VoiceOrb";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+function float32ToPcm16(float32Array) {
+  const len = float32Array.length;
+  const buffer = new ArrayBuffer(len * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < len; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Uint8Array(buffer);
+}
+
+
 /**
- * CallOverlay — Full-screen hands-free voice call with Scout.
+ * CallOverlay - Full-screen hands-free voice call with Scout.
  *
  * Features:
  * 1. Multilingual matching (STT language detection passed through to TTS and agent).
@@ -14,6 +27,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
  * 3. Persistent, scrollable transcription history viewable throughout the call.
  */
 export default function CallOverlay({ isOpen, onClose }) {
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   const [callState, setCallState] = useState("connecting");
   const [connectionError, setConnectionError] = useState("");
   // "connecting" | "listening" | "processing" | "thinking" | "speaking"
@@ -29,7 +44,9 @@ export default function CallOverlay({ isOpen, onClose }) {
   const durationTimerRef = useRef(null);
   const inactivityTimerRef = useRef(null);
   const detectedLanguageRef = useRef("en-IN");
-  const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const endButtonRef = useRef(null);
+  const callScreenRef = useRef(null);
 
   // Audio playback queue (sequential decoded audio buffers, gapless playback via Web Audio API)
   const audioPlaybackQueue = useRef([]);
@@ -39,12 +56,14 @@ export default function CallOverlay({ isOpen, onClose }) {
   const playbackGenerationRef = useRef(0);        // Invalidates old finish timers
   const playbackDecodeChainRef = useRef(Promise.resolve()); // Preserves audio chunk order
   const playbackStartTimeRef = useRef(0);          // When current playback started (context time)
+  const playbackAnalyserRef = useRef(null);
   const playbackCtxRef = useRef(null);              // Shared AudioContext for playback
 
 
   // Auto-scroll transcript container to bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = messagesContainerRef.current;
+    container?.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [callMessages, callState]);
 
   // ── Call Duration Timer ──
@@ -74,6 +93,17 @@ export default function CallOverlay({ isOpen, onClose }) {
   };
 
 
+// ── Send text to backend TTS over WebSocket ──
+const sendTextToBackendTTS = useCallback((text, lang) => {
+  if (!wsRef.current) return;
+  wsRef.current.send(JSON.stringify({
+    type: "tts",
+    text: text,
+    language_code: lang || "en-IN",
+  }));
+}, []);
+
+
 // ── 30-Second Inactivity Check-in Prompt ──
   const handleInactivityPrompt = useCallback(async () => {
     if (!activeRef.current || !wsRef.current) return;
@@ -93,32 +123,10 @@ export default function CallOverlay({ isOpen, onClose }) {
 
     // Use the same TTS helper as agent responses
     sendTextToBackendTTS(checkInText, currentLang);
-  }, []);  
-
-  // ── Convert Float32 PCM to 16-bit PCM bytes ──
-function float32ToPcm16(float32Array) {
-  const len = float32Array.length;
-  const buffer = new ArrayBuffer(len * 2);
-  const view = new DataView(buffer);
-  for (let i = 0; i < len; i++) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return new Uint8Array(buffer);
-}
-
-// ── Send text to backend TTS over WebSocket ──
-const sendTextToBackendTTS = useCallback((text, lang) => {
-  if (!wsRef.current) return;
-  wsRef.current.send(JSON.stringify({
-    type: "tts",
-    text: text,
-    language_code: lang || "en-IN",
-  }));
-}, []);
+  }, [sendTextToBackendTTS]);
 
 // ── Start raw PCM audio capture → WebSocket ──
-function startAudioCapture(stream, ws) {
+const startAudioCapture = useCallback((stream, ws) => {
   // Use default AudioContext sample rate (browser picks its native rate).
   // We'll resample to 16 kHz ourselves rather than trusting the hint.
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -174,13 +182,17 @@ function startAudioCapture(stream, ws) {
 
   gainNode.connect(processor);
   processor.connect(audioCtx.destination);
-}
+}, []);
 
 // ── Audio playback queue (gapless via Web Audio API) ──
-function playAudioChunk(arrayBuffer) {
+const playAudioChunk = useCallback((arrayBuffer) => {
   const playbackGeneration = playbackGenerationRef.current;
   if (!playbackCtxRef.current) {
     playbackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = playbackCtxRef.current.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.connect(playbackCtxRef.current.destination);
+    playbackAnalyserRef.current = analyser;
     playbackStartTimeRef.current = playbackCtxRef.current.currentTime;
   }
   const ctx = playbackCtxRef.current;
@@ -196,7 +208,7 @@ function playAudioChunk(arrayBuffer) {
       const scheduleTime = Math.max(ctx.currentTime + 0.02, playbackStartTimeRef.current);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      source.connect(playbackAnalyserRef.current);
       playbackSourcesRef.current.add(source);
       playbackStartTimeRef.current = scheduleTime + buffer.duration;
       playbackSourceRef.current = source;
@@ -213,10 +225,10 @@ function playAudioChunk(arrayBuffer) {
       console.warn("[Playback] Failed to decode audio chunk:", e);
     }
   });
-}
+}, []);
 
 // Stop speech immediately when the user starts talking and discard buffered audio.
-function stopPlaybackForBargeIn() {
+const stopPlaybackForBargeIn = useCallback(() => {
   playbackGenerationRef.current += 1;
   audioPlaybackQueue.current.length = 0;
   playbackDecodeChainRef.current = Promise.resolve();
@@ -228,7 +240,48 @@ function stopPlaybackForBargeIn() {
   playbackSourceRef.current = null;
   playbackStartTimeRef.current = 0;
   isPlayingAudioRef.current = false;
-}
+}, []);
+
+  // ── Terminate Call Session ──
+  const handleEndCall = useCallback(() => {
+    activeRef.current = false;
+    setCallState("connecting");
+    clearTimeout(inactivityTimerRef.current);
+
+    // Close WebSocket
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "end_call" }));
+      }
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    // Stop mic
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+
+    // Stop audio playback & clear queue
+    stopPlaybackForBargeIn();
+
+    // Close Playback AudioContext (separate from mic capture context)
+    if (playbackCtxRef.current) {
+      playbackCtxRef.current.close();
+      playbackCtxRef.current = null;
+      playbackAnalyserRef.current = null;
+    }
+
+    // Close AudioContext
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
+
+    onCloseRef.current();
+  }, [stopPlaybackForBargeIn]);
+
 
 // ── Start WebSocket Call (replaces old startListening) ──
 const startCallSession = useCallback(async () => {
@@ -375,13 +428,18 @@ const startCallSession = useCallback(async () => {
     console.error("Mic access error:", err);
     handleEndCall();
   }
-}, [handleInactivityPrompt]);
+}, [handleInactivityPrompt, handleEndCall, startAudioCapture, playAudioChunk, stopPlaybackForBargeIn]);
   // ── Initiate Call Session ──
   useEffect(() => {
     if (isOpen) {
       activeRef.current = true;
       threadIdRef.current = crypto.randomUUID();
-      setTimeout(() => startCallSession(), 600);
+      const startupTimer = setTimeout(() => startCallSession(), 600);
+      return () => {
+        clearTimeout(startupTimer);
+        activeRef.current = false;
+        clearTimeout(inactivityTimerRef.current);
+      };
     }
     return () => {
       activeRef.current = false;
@@ -389,42 +447,28 @@ const startCallSession = useCallback(async () => {
     };
   }, [isOpen, startCallSession]);
 
-  // ── Terminate Call Session ──
-  const handleEndCall = useCallback(() => {
-    activeRef.current = false;
-    setCallState("connecting");
-    clearTimeout(inactivityTimerRef.current);
-
-    // Close WebSocket
-    if (wsRef.current) {
-      wsRef.current.send(JSON.stringify({ type: "end_call" }));
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
-    // Stop mic
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
-
-    // Stop audio playback & clear queue
-    stopPlaybackForBargeIn();
-
-    // Close Playback AudioContext (separate from mic capture context)
-    if (playbackCtxRef.current) {
-      playbackCtxRef.current.close();
-      playbackCtxRef.current = null;
-    }
-
-    // Close AudioContext
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close();
-      audioCtxRef.current = null;
-    }
-
-    onClose();
-  }, [onClose]);
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    endButtonRef.current?.focus({ preventScroll: true });
+    const handleKey = (event) => {
+      if (event.key === "Escape") handleEndCall();
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const target = document.activeElement === endButtonRef.current
+          ? messagesContainerRef.current : endButtonRef.current;
+        target?.focus({ preventScroll: true });
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKey);
+      previousFocus?.focus?.({ preventScroll: true });
+    };
+  }, [isOpen, handleEndCall]);
 
   if (!isOpen) return null;
 
@@ -437,48 +481,38 @@ const startCallSession = useCallback(async () => {
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <div className="call-screen">
-          {/* Top Bar */}
+        <div className="call-screen" ref={callScreenRef} role="dialog" aria-modal="true" aria-labelledby="call-title" data-state={callState}>
           <div className="call-top-bar">
-            <span className="call-duration">{formatDuration(callDuration)}</span>
-            <span className="call-encrypted">🔒 Live Audio Call</span>
+            <div className="call-brand"><span className="call-brand-mark">S</span><span>SCOUT <span className="call-brand-secondary">/ VOICE</span></span></div>
+            <div className="call-session"><span className="call-live-dot" /><span>{callState === "error" ? "Disconnected" : callState === "connecting" ? "Connecting" : "Live session"}</span><span className="call-duration">{formatDuration(callDuration)}</span></div>
           </div>
 
-          {/* Avatar Header */}
-          <div className="call-header-center">
-            <motion.div
-              className="call-avatar"
-              animate={
-                callState === "speaking"
-                  ? { scale: [1, 1.08, 1], boxShadow: ["0 0 0px #e67e22", "0 0 35px #e67e22", "0 0 0px #e67e22"] }
-                  : callState === "listening"
-                    ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px #27ae60", "0 0 25px #27ae60", "0 0 0px #27ae60"] }
-                    : {}
-              }
-              transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
-            >
-              🎓
-            </motion.div>
-
-            <h2 className="call-name">Scout</h2>
-            <p className="call-subtitle">TIET College Assistant</p>
-
-            {/* Current Dynamic Status */}
-            <div className="call-status-text">
-              {callState === "connecting" && "Connecting..."}
-              {callState === "error" && `❌ ${connectionError}`}
-              {callState === "listening" && "🎤 Listening... speak freely"}
-              {callState === "processing" && "⏳ Transcribing audio..."}
-              {callState === "thinking" && "💭 Scout is thinking..."}
-              {callState === "speaking" && "🔊 Speaking response..."}
+          <div className="call-main">
+            <div className="call-header-center">
+              <span className="call-eyebrow">A LITTLE CLOSER TO CAMPUS</span>
+              <div className="call-orb-stage"><VoiceOrb state={callState} analyserRef={playbackAnalyserRef} surfaceRef={callScreenRef} /></div>
+              <h2 className="call-name" id="call-title">{callState === "speaking" ? "Scout is speaking" : callState === "thinking" ? "Connecting the dots" : callState === "processing" ? "Got it. One moment." : callState === "error" ? "Connection interrupted" : callState === "connecting" ? "Meet your campus companion" : "I'm all ears."}</h2>
+              <p className="call-subtitle">Your world at Thapar. One conversation away.</p>
+              <div className="call-status-text" role="status">
+                <span className="call-state-indicator" />
+                {callState === "connecting" && "Setting up your call"}
+                {callState === "error" && connectionError}
+                {callState === "listening" && "Listening - speak freely"}
+                {callState === "processing" && "Transcribing your words"}
+                {callState === "thinking" && "Finding your answer"}
+                {callState === "speaking" && "Speaking - you can interrupt anytime"}
+              </div>
             </div>
-          </div>
 
+            <section className="call-transcript" aria-label="Call transcript">
+              <div className="call-transcript-heading"><span>Conversation</span><span className="call-transcript-tag">LIVE TRANSCRIPT</span></div>
           {/* Scrollable Conversation History (Kept visible all through call) */}
-          <div className="call-conversation-list">
+          <div className="call-conversation-list" ref={messagesContainerRef} tabIndex={0} aria-label="Conversation history">
             {callMessages.length === 0 ? (
               <div className="call-history-empty">
-                <p>Start speaking naturally. Your transcript and Scout&apos;s responses will stay here throughout the call.</p>
+                <span className="call-empty-symbol" aria-hidden="true">✳</span>
+                <h3>Good conversations start here.</h3>
+                <p>Ask about admissions, campus life, or what comes next. Your conversation will appear here as you talk.</p>
               </div>
             ) : (
               callMessages.map((msg) => (
@@ -496,14 +530,20 @@ const startCallSession = useCallback(async () => {
                 </motion.div>
               ))
             )}
-            <div ref={messagesEndRef} />
+          </div>
+
+            </section>
           </div>
 
           {/* End Call Button */}
           <div className="call-bottom-action">
+            <span className="call-footer-note">TIET College Assistant</span>
+            <div className="call-end-control">
             <motion.button
               className="call-end-btn"
+              ref={endButtonRef}
               onClick={handleEndCall}
+              aria-label="End call"
               whileHover={{ scale: 1.06 }}
               whileTap={{ scale: 0.94 }}
             >
@@ -512,7 +552,9 @@ const startCallSession = useCallback(async () => {
                 <line x1="23" y1="1" x2="1" y2="23" />
               </svg>
             </motion.button>
-            <span className="call-end-label">End Call</span>
+            <span className="call-end-label">End call</span>
+            </div>
+            <span className="call-footer-note call-footer-hint">Just talk. Scout is here.</span>
           </div>
         </div>
       </motion.div>
