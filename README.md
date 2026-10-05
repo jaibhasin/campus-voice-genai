@@ -66,8 +66,14 @@ Index generation and existing PageIndex exports are unchanged.
 ## LangSmith
 
 Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, and optionally `LANGSMITH_PROJECT` in `.env`.
-Traces show `jev_retrieval`, each combined `jev_decision`, `fetch_local_source`, and the final answer-model call.
+Each request has one `Scout` or `Scout-Voice` root trace, grouped by its conversation `thread_id`.
+Under it, `jev_retrieval` contains each combined `jev_decision` model span and each `fetch_local_source` tool span.
+The final OpenRouter model span is named `llm_answer`; the optional LLM retrieval baseline uses `llm_agent` spans and native tool spans.
 Jev request inputs, returned decisions, probabilities, available confidence, reported token usage, and timing are recorded.
+Model spans identify the provider and model, normalize reported token usage, and capture errors and cancellation.
+OpenRouter streaming explicitly requests usage, and local read spans include document and section/page metadata plus fetched content.
+API credentials and client objects are excluded from custom trace inputs.
+Uploads remain buffered during responses and are flushed during server shutdown.
 This exposes observable decisions and evidence, not an internal reasoning transcript.
 
 ## Verification
@@ -75,11 +81,11 @@ This exposes observable decisions and evidence, not an internal reasoning transc
 After installing dependencies, run:
 
 ```bash
-uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph backend.test_voice_pipeline backend.test_agent_endpoints -v
+uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_pipeline backend.test_agent_endpoints -v
 ```
 
-The suite uses fake model responses and a mocked TypeSafe HTTP transport to verify call structure, retrieval limits, source validation, chat streaming, follow-up isolation, and voice cancellation.
+The suite uses fake model responses and mocked TypeSafe/OpenRouter HTTP transports to verify call structure, retrieval limits, source validation, chat streaming, follow-up isolation, and voice cancellation.
+Trace tests exercise the real SDKs and exported LangSmith spans to check parent relationships, call counts, inputs/outputs, usage, failures, cancellation, and credential exclusion in both retrieval modes.
 Live answer accuracy and latency require configured API keys and a separate comparison using representative questions.
 For that comparison, include multi-document questions, fee and eligibility exceptions, Hindi/Hinglish, follow-ups, and questions absent from the corpus.
 Check the actual retrieved evidence and final answers, especially premature readiness, and measure complete response time and cost in both retrieval modes.
-
