@@ -89,6 +89,90 @@ def read_first(_state, questions):
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_wrong_document_can_be_corrected_without_a_navigation_loop(self):
+        store = documents()
+        wrong, right = store.roots
+        source = store.targets[right].children[0]
+        client = ScriptedClient([
+            answer("read_more", wrong),
+            answer("read_more", "go_back"),
+            answer("read_more", right),
+            answer("read_more", source),
+            answer("ready_to_answer"),
+        ])
+        result = Retriever(store, client).run("Scholarship coverage?", [])
+        self.assertEqual(result.stop_reason, "ready_to_answer")
+        self.assertEqual(result.evidence[0]["document"], "scholarships")
+
+    def test_reading_more_text_shrinks_the_menu_and_preserves_complete_evidence(self):
+        store = DocumentStore({
+            "fees": {"tree": {"result": [
+                {"title": f"Fee policy {index}", "summary": "policy details " * 25,
+                 "text": f"Policy {index}: " + "₹ rules " * 450}
+                for index in range(10)
+            ]}}
+        })
+        client = ScriptedClient([read_first] * 12)
+        result = Retriever(store, client).run("All fee policies?", [{"text": "a" * 4000}])
+        self.assertEqual(result.stop_reason, "evidence_limit")
+        self.assertGreater(len(result.evidence), 1)
+        for source in result.evidence:
+            self.assertEqual(source["text"], store.targets[source["source_id"]].text)
+        for state, questions, _ in client.calls:
+            self.assertLessEqual(json_bytes({"state": state, "questions": questions}), 28000)
+            self.assertLessEqual(json_bytes(state["unread_sources"]), 6000)
+        self.assertEqual(result.history[-1]["status"], "not_read")
+
+    def test_very_long_navigation_labels_do_not_create_oversize_requests(self):
+        store = DocumentStore({
+            f"document-{index}": {
+                "metadata": {"name": "Huge title " * 3000, "description": "₹" * 400},
+                "tree": {"result": [{"text": "Small source"}]},
+            }
+            for index in range(30)
+        })
+        client = ScriptedClient([answer("ready_to_answer")])
+        result = Retriever(store, client).run("Hello", [])
+        self.assertEqual(result.stop_reason, "ready_to_answer")
+        state, questions, _ = client.calls[0]
+        self.assertLessEqual(json_bytes({"state": state, "questions": questions}), 28000)
+        self.assertLessEqual(json_bytes(state["unread_sources"]), 6000)
+        self.assertIn("more_candidates", state["unread_sources"])
+
+    def test_large_section_list_does_not_block_the_selected_source(self):
+        corpus = {
+            "admissions": {
+                "tree": {"result": [
+                    {"title": f"Section {index}", "summary": "details " * 50,
+                     "text": "Actual source text. " * 250}
+                    for index in range(40)
+                ]}
+            }
+        }
+        corpus.update({
+            f"other-{index}": {
+                "metadata": {"description": "unrelated details " * 30},
+                "tree": {"result": [{"text": "Unrelated source"}]},
+            }
+            for index in range(40)
+        })
+        store = DocumentStore(corpus)
+        client = ScriptedClient([read_first, read_first, read_first,
+                                 answer("ready_to_answer")])
+        result = Retriever(store, client).run("Courses?", [])
+        self.assertEqual(result.stop_reason, "ready_to_answer")
+        self.assertTrue(result.evidence)
+        self.assertEqual(result.evidence[0]["text"], "Actual source text. " * 250)
+        for state, questions, _ in client.calls:
+            self.assertLessEqual(json_bytes({"state": state, "questions": questions}), 28000)
+
+    def test_opening_document_hides_unrelated_documents(self):
+        client = ScriptedClient([read_first, answer("ready_to_answer")])
+        Retriever(documents(), client).run("Hostel fees?", [])
+        menu = client.calls[1][0]["unread_sources"]
+        self.assertNotIn("scholarships", str(menu))
+        self.assertIn("go_back", menu)
+
     def test_combined_calls_retrieve_multiple_documents_then_handoff(self):
         store = documents()
         first, second = store.roots
@@ -98,6 +182,7 @@ class RetrievalTests(unittest.TestCase):
             [
                 answer("read_more", first),
                 answer("read_more", first_source),
+                answer("read_more", "go_back"),
                 answer("read_more", second),
                 answer("read_more", second_source),
                 answer("ready_to_answer", "ignored-invalid-target"),
@@ -108,7 +193,7 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(
             {item["document"] for item in result.evidence}, {"fees", "scholarships"}
         )
-        self.assertEqual(len(client.calls), 5)
+        self.assertEqual(len(client.calls), 6)
         for state, questions, _timeout in client.calls:
             self.assertEqual(set(questions), {"action", "next_read"})
             self.assertEqual(
@@ -169,7 +254,7 @@ class RetrievalTests(unittest.TestCase):
     def test_large_input_stops_before_sending_an_oversize_request(self):
         client = ScriptedClient([])
         result = Retriever(documents(), client).run("a" * 30000, [])
-        self.assertEqual(result.stop_reason, "context_limit")
+        self.assertEqual(result.stop_reason, "input_limit")
         self.assertEqual(client.calls, [])
 
     def test_evidence_limit_never_silently_truncates_source(self):
