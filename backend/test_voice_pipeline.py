@@ -89,6 +89,55 @@ class FakeBrowserWebSocket:
 
 
 class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_check_in_waits_until_browser_finishes_playback(self):
+        audio_sent, checked_in = asyncio.Event(), asyncio.Event()
+        tts = FakeTtsSocket(events=[
+            AudioOutput(data=AudioOutputData(
+                content_type="audio/wav", audio=base64.b64encode(b"\x01\x02").decode("ascii"),
+            )),
+            EventResponse(data=EventResponseData(event_type="final")),
+        ])
+        self_test = self
+
+        class Browser(FakeBrowserWebSocket):
+            def __init__(self):
+                super().__init__()
+                self.step = 0
+
+            async def send_bytes(self, message):
+                audio_sent.set()
+
+            async def send_json(self, message):
+                await super().send_json(message)
+                if message["type"] == "check_in":
+                    checked_in.set()
+
+            async def receive(self):
+                self.step += 1
+                if self.step == 1:
+                    return {"text": json.dumps({"type": "start_call"})}
+                if self.step == 2:
+                    await audio_sent.wait()
+                    return {"text": json.dumps({"type": "playback_started"})}
+                if self.step == 3:
+                    with self_test.assertRaises(TimeoutError):
+                        await asyncio.wait_for(checked_in.wait(), 0.05)
+                    return {"text": json.dumps({"type": "playback_done"})}
+                await checked_in.wait()
+                return {"text": json.dumps({"type": "end_call"})}
+
+        original_wait = VoiceActivity.wait_for_idle
+        async def short_wait(activity):
+            await original_wait(activity, seconds=0.01)
+
+        browser = Browser()
+        with patch.object(voice_pipeline_module, "sarvam_client", FakeSarvamClient(FakeSttSocket(), tts)), patch.object(
+            voice_pipeline_module.socket, "getaddrinfo", return_value=[],
+        ), patch.object(VoiceActivity, "wait_for_idle", short_wait):
+            await asyncio.wait_for(voice_pipeline_module.voice_pipeline(browser, object()), 2)
+        self.assertIn({"type": "tts_done"}, browser.sent_json)
+        self.assertIn({"type": "check_in", "text": CHECK_INS["en-IN"], "language_code": "en-IN"}, browser.sent_json)
+
     async def test_punjabi_check_in_waits_for_answer_and_never_cancels_it(self):
         started, release, checked_in, spoken = (asyncio.Event() for _ in range(4))
         tts = FakeTtsSocket()
