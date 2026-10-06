@@ -128,6 +128,111 @@ class GraphTests(unittest.TestCase):
         agent.invoke("Other question", config={"configurable": {"thread_id": "second"}})
         self.assertEqual(client.calls[1][0]["conversation"], [])
 
+    def test_running_summary_carries_older_user_fact_to_jev_and_answer(self):
+        agent, client, model = make_agent(
+            [answer("ready_to_answer")] * 3,
+            summary_history_budget_chars=1,
+            summary_max_chars=100,
+            recent_message_count=3,
+        )
+        summarized = []
+
+        def summarize(summary, messages):
+            summarized.extend(Agent._summary_input(messages))
+            return "User stated their preferred name is Mira."
+
+        agent._summarize = summarize
+        config = {"configurable": {"thread_id": "summary-facts"}}
+        agent.invoke("My preferred name is Mira.", config=config)
+        agent.invoke("Please use that name.", config=config)
+        agent.invoke("What name did I give you?", config=config)
+
+        jev_conversation = client.calls[2][0]["conversation"]
+        memory = next(item for item in jev_conversation if item["role"] == "summary")
+        self.assertIn("Mira", memory["text"])
+        self.assertEqual(jev_conversation[-2]["text"], "Please use that name.")
+        self.assertEqual(jev_conversation[-1]["role"], "assistant")
+        self.assertEqual(summarized[0]["role"], "user")
+        self.assertIn("My preferred name is Mira.", summarized[0]["text"])
+        self.assertTrue(any("User stated their preferred name is Mira." in item.content
+                            for item in model.calls[-1]))
+
+    def test_summary_is_thread_isolated_and_failure_keeps_cursor(self):
+        agent, client, _model = make_agent(
+            [answer("ready_to_answer")] * 4,
+            summary_history_budget_chars=1,
+            recent_message_count=1,
+        )
+        config_a = {"configurable": {"thread_id": "summary-a"}}
+        config_b = {"configurable": {"thread_id": "summary-b"}}
+        agent._summarize = lambda _summary, _messages: "User said secret: orchid."
+        agent.invoke("Remember orchid.", config=config_a)
+        agent.invoke("Follow up A", config=config_a)
+        self.assertIn("orchid", json.dumps(client.calls[1][0]["conversation"]))
+
+        agent._summarize = lambda *_args: (_ for _ in ()).throw(RuntimeError("offline"))
+        agent.invoke("Other thread", config=config_b)
+        failed = agent.invoke("Follow up B", config=config_b)
+        state_b = agent.runnable.get_state(config_b).values
+        self.assertEqual(state_b.get("conversation_summary", ""), "")
+        self.assertEqual(state_b.get("summary_cursor", 0), 0)
+        self.assertNotIn("orchid", json.dumps(client.calls[-1][0]["conversation"]))
+
+        state_a = agent.runnable.get_state(config_a).values
+        self.assertIn("orchid", state_a["conversation_summary"])
+        self.assertTrue(failed["messages"][-1].content)
+
+    def test_answer_budget_keeps_current_question_and_reserves_response_space(self):
+        agent, _, _model = make_agent(
+            [],
+            system_prompt="Answer briefly.",
+            answer_context_budget_tokens=200,
+            answer_response_reserve_tokens=40,
+        )
+        agent.retrieval_mode = "llm"
+        from langchain_core.messages import AIMessage
+
+        messages = [
+            HumanMessage(content=f"old turn {index} " + "detail " * 25)
+            if index % 2 == 0
+            else AIMessage(content=f"old answer {index} " + "detail " * 25)
+            for index in range(10)
+        ] + [HumanMessage(content="Keep this exact current question?")]
+        fitted = agent._fit_answer_messages(messages)
+        self.assertLessEqual(
+            agent._message_tokens(fitted),
+            agent.answer_context_budget_tokens - agent.answer_response_reserve_tokens,
+        )
+        self.assertEqual(fitted[-1].content, "Keep this exact current question?")
+
+    def test_answer_budget_counts_prompt_and_retrieval_evidence(self):
+        agent, _, _model = make_agent(
+            [],
+            system_prompt="Use the evidence precisely.",
+            answer_context_budget_tokens=600,
+            answer_response_reserve_tokens=100,
+        )
+        evidence = "A retrieved fact. " * 500
+        state = AgentState(
+            messages=[HumanMessage(content="Keep this question exactly?")],
+            retrieval={
+                "evidence": [{"document": "facts", "text": evidence}],
+                "history": [],
+                "stop_reason": "ready_to_answer",
+                "limitation": "",
+            },
+        )
+        fitted = agent._answer_messages(state)
+        self.assertLessEqual(agent._message_tokens(fitted), 500)
+        self.assertTrue(any(message.content == "Keep this question exactly?" for message in fitted))
+        context_message = next(
+            message
+            for message in fitted
+            if message.content.startswith("The following JSON is application-supplied")
+        )
+        context = json.loads(context_message.content.split("\n", 1)[1])
+        self.assertLess(len(context["sources"][0]["text"]), len(evidence))
+
     def test_forced_stop_is_transferred_as_a_limitation(self):
         agent, _client, model = make_agent([answer("read_more", "invalid")])
         agent.invoke("fees", config={"configurable": {"thread_id": "limited"}})
