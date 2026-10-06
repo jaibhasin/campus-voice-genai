@@ -89,6 +89,27 @@ def read_first(_state, questions):
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_other_documents_excludes_current_book_but_allows_explicit_return(self):
+        store = documents()
+        first = store.roots[0]
+        first_source = store.targets[first].children[0]
+        pages = store.targets[first].children[1]
+        client = ScriptedClient([
+            answer("read_more", first),
+            answer("read_more", first_source),
+            answer("read_more", pages),
+            answer("read_more", "other_documents"),
+            answer("read_more", "resume_document"),
+            answer("ready_to_answer"),
+        ])
+        result = Retriever(store, client).run("Fees and scholarship?", [])
+        self.assertEqual(result.stop_reason, "ready_to_answer")
+        alternatives = client.calls[4][0]["unread_sources"]
+        self.assertNotIn(first, alternatives)
+        self.assertIn("resume_document", alternatives)
+        self.assertIn(store.roots[1], alternatives)
+        self.assertNotIn(first_source, client.calls[5][0]["unread_sources"])
+
     def test_wrong_document_can_be_corrected_without_a_navigation_loop(self):
         store = documents()
         wrong, right = store.roots

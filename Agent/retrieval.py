@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -129,7 +130,8 @@ class Retriever:
             return target_id not in opened
         return any(self._available(child, read, opened) for child in target.children)
 
-    def _request(self, question, conversation, result, path, candidates, offset):
+    def _request(self, question, conversation, result, path, candidates, offset,
+                 previous_document=None):
         """Build one focused page, fitting navigation around evidence already read."""
         scope = self.store.targets[path[-1]] if path else None
         state = {
@@ -158,6 +160,7 @@ class Retriever:
                     "An outline opens only its children, not source text. "
                     "more_candidates shows another page of this list; go_back returns to "
                     "the parent list; other_documents returns to the document list. "
+                    "resume_document returns to the document just left. "
                     "Use navigation to correct a wrong choice or gather another document. "
                     "The choice is ignored when action is ready_to_answer."
                 ),
@@ -176,13 +179,20 @@ class Retriever:
             add("go_back", {"kind": "navigation", "title": "Return to the parent list"})
         if len(path) > 1:
             add("other_documents", {"kind": "navigation", "title": "Choose another document"})
+        if not path and previous_document is not None:
+            add("resume_document", {
+                "kind": "navigation",
+                "title": "Return to " + self._short(self.store.targets[previous_document].title, 120),
+            })
         count = 0
         for target_id in candidates[offset:]:
             target = self.store.targets[target_id]
             title = target.title.rsplit(" / ", 1)[-1]
+            if not path:
+                title = re.sub(r"^[0-9a-f]{32}_", "", title)
             descriptions = [
                 {"kind": target.kind, "title": self._short(title, 240),
-                 "summary": self._short(target.summary, 240)},
+                 "summary": self._short(target.summary, 240 if path else 180)},
                 {"kind": target.kind, "title": self._short(title, 80)},
             ]
             fits = False
@@ -204,7 +214,8 @@ class Retriever:
                 del criteria[target_id]
                 break
             count += 1
-            if count >= 12:
+            # The compact document catalog can show more choices than a section list.
+            if count >= (12 if path else 24):
                 break
         if not count:
             return None
@@ -224,7 +235,7 @@ class Retriever:
         """Navigate document -> section -> source, with a separate list per scope."""
         result = RetrievalResult()
         read, opened, transitions = set(), set(), set()
-        path, offset = [], 0
+        path, offset, previous_document = [], 0, None
         started = time.monotonic()
 
         def stop(reason, limitation):
@@ -239,7 +250,14 @@ class Retriever:
                 )
             while True:
                 children = self.store.targets[path[-1]].children if path else self.store.roots
-                candidates = [key for key in children if self._available(key, read, opened)]
+                candidates = [
+                    key for key in children
+                    if self._available(key, read, opened)
+                    and (path or key != previous_document)
+                ]
+                if not path and not candidates and previous_document is not None:
+                    previous_document = None
+                    continue
                 if candidates or not path:
                     break
                 path.pop()
@@ -251,7 +269,9 @@ class Retriever:
                 )
             if offset >= len(candidates):
                 offset = 0
-            request = self._request(question, conversation, result, path, candidates, offset)
+            request = self._request(
+                question, conversation, result, path, candidates, offset, previous_document
+            )
             if request is None:
                 reason = "evidence_limit" if result.evidence else "input_limit"
                 return stop(
@@ -317,14 +337,21 @@ class Retriever:
                     "Retrieval repeated the same navigation without reading new evidence.",
                 )
             transitions.add(transition)
-            if selected in {"more_candidates", "go_back", "other_documents"}:
+            if selected in {"more_candidates", "go_back", "other_documents", "resume_document"}:
                 if selected == "more_candidates":
                     offset = next_offset
                 elif selected == "go_back":
+                    if len(path) == 1:
+                        previous_document = path[0]
                     path.pop()
                     offset = 0
-                else:
+                elif selected == "other_documents":
+                    previous_document = path[0]
                     path.clear()
+                    offset = 0
+                else:
+                    path.append(previous_document)
+                    previous_document = None
                     offset = 0
                 entry["status"] = "navigation"
                 result.history.append(entry)
