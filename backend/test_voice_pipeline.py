@@ -7,6 +7,7 @@ import wave
 from unittest.mock import AsyncMock, patch
 
 from backend import voice_pipeline as voice_pipeline_module
+from backend.voice_activity import CHECK_INS, VoiceActivity
 from sarvamai.types.audio_output import AudioOutput
 from sarvamai.types.audio_output_data import AudioOutputData
 from sarvamai.types.event_response import EventResponse
@@ -88,6 +89,71 @@ class FakeBrowserWebSocket:
 
 
 class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_punjabi_check_in_waits_for_answer_and_never_cancels_it(self):
+        started, release, checked_in, spoken = (asyncio.Event() for _ in range(4))
+        tts = FakeTtsSocket()
+        cancelled = []
+        language_event = type("RealtimeTranscriptFinal", (), {
+            "text": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ", "language": "pa-IN", "language_confidence": 0.99,
+        })()
+
+        class Agent:
+            async def astream(self, text, **kwargs):
+                started.set()
+                try:
+                    await release.wait()
+                    yield {"type": "token", "content": "ਪੰਜਾਬੀ ਜਵਾਬ"}
+                    yield {"type": "done"}
+                except asyncio.CancelledError:
+                    cancelled.append(True)
+                    raise
+
+        class Browser(FakeBrowserWebSocket):
+            def __init__(self):
+                super().__init__()
+                self.step = 0
+
+            async def send_json(self, message):
+                await super().send_json(message)
+                if message["type"] == "check_in":
+                    checked_in.set()
+
+            async def receive(self):
+                self.step += 1
+                if self.step == 1:
+                    return {"text": json.dumps({"type": "start_call"})}
+                if self.step == 2:
+                    await started.wait()
+                    return {"text": json.dumps({"type": "tts", "text": "English interruption"})}
+                with self_test.assertRaises(TimeoutError):
+                    await asyncio.wait_for(checked_in.wait(), 0.05)
+                release.set()
+                await checked_in.wait()
+                await spoken.wait()
+                return {"text": json.dumps({"type": "end_call"})}
+
+        async def flush():
+            await tts.events.put(EventResponse(data=EventResponseData(event_type="final")))
+            if tts.convert.await_count > 1:
+                spoken.set()
+
+        original_wait = VoiceActivity.wait_for_idle
+        async def short_wait(activity):
+            await original_wait(activity, seconds=0.01)
+
+        self_test = self
+        browser = Browser()
+        tts.flush.side_effect = flush
+        with patch.object(voice_pipeline_module, "sarvam_client", FakeSarvamClient(FakeSttSocket([language_event]), tts)), patch.object(
+            voice_pipeline_module.socket, "getaddrinfo", return_value=[],
+        ), patch.object(VoiceActivity, "wait_for_idle", short_wait):
+            await asyncio.wait_for(voice_pipeline_module.voice_pipeline(browser, Agent()), 2)
+        self.assertEqual(cancelled, [])
+        texts = [call.args[0] for call in tts.convert.await_args_list]
+        self.assertEqual(texts[0], "ਪੰਜਾਬੀ ਜਵਾਬ")
+        self.assertEqual(" ".join(texts[1:]), CHECK_INS["pa-IN"])
+        self.assertIn({"type": "check_in", "text": CHECK_INS["pa-IN"], "language_code": "pa-IN"}, browser.sent_json)
+
     async def test_stable_language_is_shared_by_agent_and_serialized_tts(self):
         turns = [
             ("What are the hostel fees?", "en-IN", 0.99),
