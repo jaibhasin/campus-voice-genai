@@ -88,6 +88,74 @@ class FakeBrowserWebSocket:
 
 
 class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stable_language_is_shared_by_agent_and_serialized_tts(self):
+        turns = [
+            ("What are the hostel fees?", "en-IN", 0.99),
+            ("Tell me about hostel charges", "hi-IN", 0.01),
+            ("Yes", "hi-IN", 0.99),
+            ("मुझे हॉस्टल के बारे में बताओ", "hi-IN", 0.99),
+            ("मुझे एडमिशन के बारे में बताओ", "hi-IN", 0.99),
+            ("Please respond in Punjabi", "en-IN", 0.99),
+        ]
+        handled = asyncio.Queue()
+        flushed = asyncio.Event()
+
+        class Stt(FakeSttSocket):
+            async def __aiter__(self):
+                for text, language, confidence in turns:
+                    yield type("RealtimeTranscriptFinal", (), {
+                        "text": text, "language": language, "language_confidence": confidence,
+                    })()
+                    await handled.get()
+                await asyncio.Event().wait()
+
+        class Agent:
+            def __init__(self):
+                self.languages = []
+
+            async def astream(self, text, **kwargs):
+                self.languages.append(kwargs["config"]["configurable"]["response_language"])
+                yield {"type": "token", "content": "Synthetic response"}
+                yield {"type": "done", "full_content": "Synthetic response"}
+                await handled.put(True)
+
+        class Browser(FakeBrowserWebSocket):
+            def __init__(self):
+                super().__init__()
+                self.started = False
+
+            async def receive(self):
+                if not self.started:
+                    self.started = True
+                    return {"text": json.dumps({"type": "start_call"})}
+                await flushed.wait()
+                return {"text": json.dumps({"type": "end_call"})}
+
+        agent, browser, tts = Agent(), Browser(), FakeTtsSocket()
+        order = []
+        async def configure(**kwargs):
+            order.append(("language", kwargs["target_language_code"]))
+
+        async def convert(text):
+            order.append(("text", text))
+
+        async def flush():
+            if len(agent.languages) == len(turns):
+                flushed.set()
+
+        tts.configure.side_effect = configure
+        tts.convert.side_effect = convert
+        tts.flush.side_effect = flush
+        with patch.object(voice_pipeline_module, "sarvam_client", FakeSarvamClient(Stt(), tts)), patch.object(
+            voice_pipeline_module.socket, "getaddrinfo", return_value=[],
+        ):
+            await asyncio.wait_for(voice_pipeline_module.voice_pipeline(browser, agent), 2)
+        expected = ["en-IN", "en-IN", "en-IN", "en-IN", "hi-IN", "pa-IN"]
+        self.assertEqual(agent.languages, expected)
+        self.assertEqual([event["language_code"] for event in browser.sent_json if event["type"] == "transcript"], expected)
+        self.assertEqual([code for kind, code in order if kind == "language"], ["en-IN", "hi-IN", "pa-IN"])
+        self.assertEqual(order[-2:], [("language", "pa-IN"), ("text", "Synthetic response")])
+
     async def test_marks_browser_ready_without_awaiting_sdk_listener_loops(self):
         browser = FakeBrowserWebSocket()
         stt_socket = FakeSttSocket()
@@ -166,7 +234,9 @@ class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
             [
                 (
                     "Hello",
-                    {"config": {"configurable": {"thread_id": "voice-call-123"}}},
+                    {"config": {"configurable": {
+                        "thread_id": "voice-call-123", "response_language": "en-IN",
+                    }}},
                 )
             ],
         )

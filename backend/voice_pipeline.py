@@ -20,6 +20,8 @@ from sarvamai import AsyncSarvamAI
 from sarvamai.types.realtime_audio_input import RealtimeAudioInput
 from sarvamai.types.audio_output import AudioOutput
 
+from backend.voice_language import VoiceLanguage
+
 # ── Config ──
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
 sarvam_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
@@ -57,7 +59,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
     agent_task = None
     tts_send_task = None
     tts_recv_task = None
-    current_language = "en-IN"   # updated dynamically from STT auto-detection
+    language = VoiceLanguage()
     thread_id = str(uuid.uuid4())
 
     try:
@@ -144,41 +146,32 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
 
                     elif event_type == "RealtimeTranscriptFinal":
                         transcript = getattr(event, "text", "").strip()
-
-                        # Extract detected language from STT (if auto-detected)
-                        detected_lang = getattr(event, "language", None)
-                        if detected_lang and detected_lang != "unknown":
-                            nonlocal current_language
-                            if detected_lang != current_language:
-                                current_language = detected_lang
-                                # Reconfigure TTS for the detected language
-                                try:
-                                    await tts_ws.configure(
-                                        target_language_code=current_language,
-                                        speaker="shubh",
-                                        output_audio_codec="wav",
-                                        speech_sample_rate=22050,
-                                    )
-                                except Exception as e:
-                                    print(f"[TTS Reconfigure Error] {e}")
-
                         if transcript.strip():
+                            previous_language = language.current
+                            response_language = language.observe(
+                                transcript,
+                                getattr(event, "language", None),
+                                getattr(event, "language_confidence", None),
+                            )
                             await websocket.send_json({
                                 "type": "transcript",
                                 "text": transcript,
-                                "language_code": current_language,
+                                "language_code": response_language,
                             })
 
                             # Cancel previous agent (user barge-in)
                             nonlocal agent_task
                             if agent_task and not agent_task.done():
                                 agent_task.cancel()
+                                await agent_task
 
                             # Signal TTS handler to discard old response
                             await agent_text_queue.put("RESET")
+                            if response_language != previous_language:
+                                await agent_text_queue.put(("language", response_language))
 
                             agent_task = asyncio.create_task(
-                                run_agent(transcript)
+                                run_agent(transcript, response_language)
                             )
 
                     elif event_type == "RealtimeVadSpeechStart":
@@ -196,12 +189,15 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                 print(f"[STT Event Error] {e}")
 
         # ── Agent runner ──────────────────────────────────────────────────
-        async def run_agent(text: str):
+        async def run_agent(text: str, response_language: str):
             """Run the LangGraph agent and push text tokens to the TTS queue."""
             try:
                 async for event in voice_agent.astream(
                     text,
-                    config={"configurable": {"thread_id": thread_id}},
+                    config={"configurable": {
+                        "thread_id": thread_id,
+                        "response_language": response_language,
+                    }},
                 ):
                     if event.get("type") == "token":
                         content = event["content"]
@@ -229,6 +225,15 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
             try:
                 while True:
                     token = await agent_text_queue.get()
+
+                    if isinstance(token, tuple) and token[0] == "language":
+                        await tts_ws.configure(
+                            target_language_code=token[1],
+                            speaker="shubh",
+                            output_audio_codec="wav",
+                            speech_sample_rate=22050,
+                        )
+                        continue
 
                     # Barge-in: user interrupted — discard current buffer
                     if token == "RESET":
