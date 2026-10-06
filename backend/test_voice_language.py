@@ -4,6 +4,17 @@ from backend.voice_language import VoiceLanguage
 
 
 class VoiceLanguageTests(unittest.TestCase):
+    def test_negated_requests_do_not_select_unwanted_language(self):
+        for text in (
+            "Please do not speak in Hindi", "Don't reply in Punjabi",
+            "I do not want you to speak in Hindi", "Never answer in Punjabi",
+            "हिंदी में मत बोलिए", "ਹਿੰਦੀ ਵਿੱਚ ਗੱਲ ਨਾ ਕਰੋ",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(VoiceLanguage().observe(text, "en-IN", 0.99), "en-IN")
+        language = VoiceLanguage()
+        self.assertEqual(language.observe("Don't reply in Hindi; please reply in Punjabi", "en-IN", 0.99), "pa-IN")
+
     def test_initial_punjabi_greeting_establishes_language(self):
         language = VoiceLanguage()
         self.assertEqual(language.observe("ਸਤ ਸ੍ਰੀ ਅਕਾਲ", "pa-IN", 0.99), "pa-IN")

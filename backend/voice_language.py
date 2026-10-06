@@ -7,6 +7,21 @@ from dataclasses import dataclass
 from Agent.languages import VOICE_LANGUAGES
 
 
+def negated_request(text, start, end):
+    """Ignore negative commands within the same clause as a language request."""
+    prefix = re.split(r"[,;.!?]", text[:start])[-1]
+    return bool(
+        re.search(
+            r"\b(?:not|never|don't|don’t|cannot|can't|can’t|avoid|stop|no)\b"
+            r"(?:\s+\w+){0,5}\s*$",
+            prefix,
+            re.IGNORECASE,
+        )
+        or re.search(r"(?:ਨਾ|ਨਹੀਂ|मत|नहीं)\s*$", prefix)
+        or re.match(r"\s*(?:ਨਾ|ਨਹੀਂ|मत|नहीं)(?:\s|[.!?,;]|$)", text[end:])
+    )
+
+
 @dataclass
 class VoiceLanguage:
     current: str = "en-IN"
@@ -19,11 +34,14 @@ class VoiceLanguage:
             return self.current
         # An explicit request overrides acoustic language detection: an English
         # sentence can ask Scout to continue in Punjabi.
-        requested = re.search(
-            r"\b(?:speak|talk|reply|respond|answer|continue)(?:\s+to me)?\s+in\s+"
-            r"(" + "|".join(VOICE_LANGUAGES.values()) + r")\b",
-            text,
-            re.IGNORECASE,
+        requested = next(
+            (match for match in re.finditer(
+                r"\b(?:speak|talk|reply|respond|answer|continue)(?:\s+to me)?\s+in\s+"
+                r"(" + "|".join(VOICE_LANGUAGES.values()) + r")\b",
+                text,
+                re.IGNORECASE,
+            ) if not negated_request(text, match.start(), match.end())),
+            None,
         )
         native_requests = {
             "pa-IN": r"ਪੰਜਾਬੀ (?:ਵਿੱਚ|ਚ) (?:ਬੋਲੋ|ਗੱਲ ਕਰੋ|ਜਵਾਬ ਦਿਓ)",
@@ -34,7 +52,9 @@ class VoiceLanguage:
              if requested and name.lower() == requested[1].lower()),
             None,
         ) or next(
-            (code for code, pattern in native_requests.items() if re.search(pattern, text)),
+            (code for code, pattern in native_requests.items()
+             if any(not negated_request(text, match.start(), match.end())
+                    for match in re.finditer(pattern, text))),
             None,
         )
         if explicit:
