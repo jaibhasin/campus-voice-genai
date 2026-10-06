@@ -7,6 +7,10 @@ langgraph
 langchain-core
 langchain-openai
 
+# Jev retrieval decisions and tracing
+typesafe-sdk[http2]==0.7.2
+langsmith>=0.14.4
+
 # LLM / HuggingFace (used by local indexer)
 huggingface-hub
 langchain-huggingface
