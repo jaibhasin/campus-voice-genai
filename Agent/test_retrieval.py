@@ -112,12 +112,18 @@ class RetrievalTests(unittest.TestCase):
         for state, questions, _timeout in client.calls:
             self.assertEqual(set(questions), {"action", "next_read"})
             self.assertEqual(
+                set(state["unread_sources"]), set(questions["next_read"]["criteria"])
+            )
+            self.assertEqual(
                 set(questions["action"]["criteria"]), {"read_more", "ready_to_answer"}
             )
             self.assertLessEqual(
                 json_bytes({"state": state, "questions": questions}), 28000
             )
         self.assertEqual(client.calls[1][0]["evidence"], [])
+        self.assertEqual(client.calls[0][0]["unread_source_count"], 2)
+        self.assertFalse(client.calls[0][0]["has_more_candidates"])
+        self.assertIn("Hostel fees", str(client.calls[0][0]["unread_sources"]))
         self.assertIn("Hostel fees", client.calls[2][0]["evidence"][0]["text"])
         for index, (_state, questions, _timeout) in enumerate(client.calls[1:], 1):
             prior = result.history[index - 1].get("target_id")
@@ -184,8 +190,14 @@ class RetrievalTests(unittest.TestCase):
         )
         chosen = []
 
-        def paginate(_state, questions):
+        def paginate(state, questions):
             menu = questions["next_read"]["criteria"]
+            self.assertEqual(set(state["unread_sources"]), set(menu))
+            self.assertTrue(state["has_more_candidates"])
+            self.assertEqual(state["unread_source_count"], len(store.roots))
+            self.assertLessEqual(
+                json_bytes({"state": state, "questions": questions}), 6000
+            )
             chosen.extend(key for key in menu if key != "more_candidates")
             return answer("read_more", "more_candidates")
 
