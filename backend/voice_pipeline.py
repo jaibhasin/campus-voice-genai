@@ -174,7 +174,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                             nonlocal agent_task
                             if agent_task and not agent_task.done():
                                 agent_task.cancel()
-                                await agent_task
+                                # Consume the child's cancellation even if it
+                                # never started; cancelling this listener still propagates.
+                                await asyncio.gather(agent_task, return_exceptions=True)
 
                             # Signal TTS handler to discard old response
                             await agent_text_queue.put("RESET")

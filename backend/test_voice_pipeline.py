@@ -89,6 +89,40 @@ class FakeBrowserWebSocket:
 
 
 class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_consecutive_final_transcripts_do_not_stop_stt_after_cancellation(self):
+        events = [type("RealtimeTranscriptFinal", (), {
+            "text": text, "language": "en-IN", "language_confidence": 0.99,
+        })() for text in ("First question", "Second question", "Third question")]
+        answered = asyncio.Event()
+        calls = []
+
+        class Agent:
+            async def astream(self, text, **kwargs):
+                calls.append(text)
+                answered.set()
+                yield {"type": "done"}
+
+        class Browser(FakeBrowserWebSocket):
+            def __init__(self):
+                super().__init__()
+                self.started = False
+
+            async def receive(self):
+                if not self.started:
+                    self.started = True
+                    return {"text": json.dumps({"type": "start_call"})}
+                await answered.wait()
+                return {"text": json.dumps({"type": "end_call"})}
+
+        browser = Browser()
+        client = FakeSarvamClient(FakeSttSocket(events), FakeTtsSocket())
+        with patch.object(voice_pipeline_module, "sarvam_client", client), patch.object(
+            voice_pipeline_module.socket, "getaddrinfo", return_value=[],
+        ):
+            await asyncio.wait_for(voice_pipeline_module.voice_pipeline(browser, Agent()), 1)
+        self.assertEqual([msg["text"] for msg in browser.sent_json if msg["type"] == "transcript"], [event.text for event in events])
+        self.assertEqual(calls, ["Third question"])
+
     async def test_check_in_waits_until_browser_finishes_playback(self):
         audio_sent, checked_in = asyncio.Event(), asyncio.Event()
         tts = FakeTtsSocket(events=[
