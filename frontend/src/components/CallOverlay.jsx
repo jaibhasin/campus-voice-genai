@@ -46,7 +46,7 @@ export default function CallOverlay({ isOpen, onClose }) {
   const detectedLanguageRef = useRef("en-IN");
   const messagesContainerRef = useRef(null);
   const endButtonRef = useRef(null);
-  const callScreenRef = useRef(null);
+  const callOverlayRef = useRef(null);
 
   // Audio playback queue (sequential decoded audio buffers, gapless playback via Web Audio API)
   const audioPlaybackQueue = useRef([]);
@@ -476,12 +476,14 @@ const startCallSession = useCallback(async () => {
     <AnimatePresence>
       <motion.div
         className="call-overlay"
+        ref={callOverlayRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <div className="call-screen" ref={callScreenRef} role="dialog" aria-modal="true" aria-labelledby="call-title" data-state={callState}>
+        <div className="call-edge-light" aria-hidden="true" />
+        <div className="call-screen" role="dialog" aria-modal="true" aria-labelledby="call-title" data-state={callState}>
           <div className="call-top-bar">
             <div className="call-brand"><span className="call-brand-mark">S</span><span>SCOUT <span className="call-brand-secondary">/ VOICE</span></span></div>
             <div className="call-session"><span className="call-live-dot" /><span>{callState === "error" ? "Disconnected" : callState === "connecting" ? "Connecting" : "Live session"}</span><span className="call-duration">{formatDuration(callDuration)}</span></div>
@@ -490,7 +492,7 @@ const startCallSession = useCallback(async () => {
           <div className="call-main">
             <div className="call-header-center">
               <span className="call-eyebrow">A LITTLE CLOSER TO CAMPUS</span>
-              <div className="call-orb-stage"><VoiceOrb state={callState} analyserRef={playbackAnalyserRef} surfaceRef={callScreenRef} /></div>
+              <div className="call-orb-stage"><VoiceOrb state={callState} analyserRef={playbackAnalyserRef} surfaceRef={callOverlayRef} /></div>
               <h2 className="call-name" id="call-title">{callState === "speaking" ? "Scout is speaking" : callState === "thinking" ? "Connecting the dots" : callState === "processing" ? "Got it. One moment." : callState === "error" ? "Connection interrupted" : callState === "connecting" ? "Meet your campus companion" : "I'm all ears."}</h2>
               <p className="call-subtitle">Your world at Thapar. One conversation away.</p>
               <div className="call-status-text" role="status">
