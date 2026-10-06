@@ -205,6 +205,34 @@ class GraphTests(unittest.TestCase):
         )
         self.assertEqual(fitted[-1].content, "Keep this exact current question?")
 
+    def test_answer_budget_counts_prompt_and_retrieval_evidence(self):
+        agent, _, _model = make_agent(
+            [],
+            system_prompt="Use the evidence precisely.",
+            answer_context_budget_tokens=600,
+            answer_response_reserve_tokens=100,
+        )
+        evidence = "A retrieved fact. " * 500
+        state = AgentState(
+            messages=[HumanMessage(content="Keep this question exactly?")],
+            retrieval={
+                "evidence": [{"document": "facts", "text": evidence}],
+                "history": [],
+                "stop_reason": "ready_to_answer",
+                "limitation": "",
+            },
+        )
+        fitted = agent._answer_messages(state)
+        self.assertLessEqual(agent._message_tokens(fitted), 500)
+        self.assertTrue(any(message.content == "Keep this question exactly?" for message in fitted))
+        context_message = next(
+            message
+            for message in fitted
+            if message.content.startswith("The following JSON is application-supplied")
+        )
+        context = json.loads(context_message.content.split("\n", 1)[1])
+        self.assertLess(len(context["sources"][0]["text"]), len(evidence))
+
     def test_forced_stop_is_transferred_as_a_limitation(self):
         agent, _client, model = make_agent([answer("read_more", "invalid")])
         agent.invoke("fees", config={"configurable": {"thread_id": "limited"}})
