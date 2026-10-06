@@ -50,7 +50,11 @@ The backend uses `TYPESAFE_API_KEY` for Jev retrieval, `OPENROUTER_API_KEY` for 
   Jev can request more choices, return to a parent section, switch documents, or explicitly resume the document it just left.
   Titles and short summaries guide these choices; only fetched text supports factual answers.
 - **Conversation:** Chat and voice share this flow, with fresh evidence per question and history scoped to `thread_id`.
-  Jev receives up to six recent messages (4,000 UTF-8 bytes).
+  When older history exceeds its configured character budget, the agent incrementally updates an in-memory summary and retains recent messages verbatim.
+  Both Jev and the answer LLM receive that summary with recent conversation messages; Jev's combined conversation history stays within 4,000 UTF-8 bytes and six recent messages.
+  The answer LLM input includes its system prompt and retrieval evidence within a configurable token budget, with a separate response-token reserve.
+  The default budgets are 16,000 archived-history characters, a 5,000-character summary, 12 recent messages, 12,000 total answer tokens, and 1,500 reserved response tokens.
+  Summaries are isolated by `thread_id` and remain in memory only, so they do not survive backend restarts.
   Its request includes the last eight retrieval decisions, while the complete decision history remains available in traces and the answer handoff.
 - **Limits:** Defaults are 12 rounds, a 20-second budget checked between requests, and a 5-second HTTP timeout (also a total deadline per async request).
   Request and evidence budgets are 28,000 and 18,000 UTF-8 bytes; SDK retries are disabled.
