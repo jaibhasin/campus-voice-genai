@@ -1037,7 +1037,6 @@ html, body {
   color: #f6f6f6;
   background: #030303;
   background-image: radial-gradient(ellipse at 50% 20%, #ffffff08, transparent 55%);
-  padding: clamp(12px, 2.5vw, 36px);
   display: flex;
   isolation: isolate;
 }
@@ -1056,12 +1055,7 @@ html, body {
   flex-direction: column;
   width: 100%;
   min-height: 0;
-  padding: 28px 36px 20px;
-  border: 1px solid #e6e6e620;
-  border-radius: 24px;
-  background: linear-gradient(135deg, #ffffff06, #ffffff01 45%, #ffffff04);
-  box-shadow: inset 0 1px 0 #ffffff15, inset 0 -1px 0 #d0d0d00d, 0 24px 90px #0008;
-  backdrop-filter: blur(32px);
+  padding: clamp(28px, 5vw, 64px) clamp(24px, 5.5vw, 72px) clamp(20px, 4vw, 56px);
   overflow: auto;
 }
 /* Voice-lit glass stays around the perimeter, clear of text and controls. */
@@ -1139,7 +1133,7 @@ html, body {
 .call-footer-note { color: #a0a0a0; font-size: 11px; letter-spacing: 0.3px; }
 .call-footer-hint { text-align: right; }
 @media (max-width: 760px) {
-  .call-screen { padding: 20px 18px 16px; border-radius: 22px; }
+  .call-screen { padding: 28px 24px 20px; }
   .call-main { grid-template-columns: 1fr; grid-template-rows: auto auto; gap: 18px; margin: 16px auto; overflow-y: auto; align-items: start; }
   .call-header-center { padding: 12px 0 0; }
   .call-orb-stage { width: min(280px, 33vh); }
