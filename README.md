@@ -38,6 +38,8 @@ The backend uses `TYPESAFE_API_KEY` for Jev retrieval, `OPENROUTER_API_KEY` for 
 
 Jev receives the question, recent conversation, fetched source text, and available retrieval targets.
 Each API request asks both `action` and `next_read` together.
+These questions are evaluated independently, so candidate descriptions are supplied once in the shared `unread_sources` state and the selection options refer to those IDs.
+The shared state also reports the unread candidate count and whether more candidates are outside the visible menu, so the stop decision can account for further retrieval options.
 The only action options are `read_more` and `ready_to_answer`.
 When Jev chooses `read_more`, code executes the selected local target and sends the updated evidence in the next request.
 Opening a document exposes its sections and pages; reading a section or page adds actual text to the evidence packet.
