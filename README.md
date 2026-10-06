@@ -29,6 +29,10 @@ uv run uvicorn backend.main:app --reload --port 8000
 
 The backend runs at `http://localhost:8000`.
 
+Voice calls use the same accepted conversation language for answer generation and speech synthesis.
+Low-confidence detections and short follow-ups preserve an established language; explicit language requests switch immediately.
+Check-ins wait for 60 seconds of inactivity after speech, answers, and browser playback finish, and use the accepted language for English, Hindi, and Punjabi calls.
+
 ## Environment variables
 
 Copy `.env.example` to `.env` in the project root and fill in your keys.
@@ -63,10 +67,10 @@ The backend uses `TYPESAFE_API_KEY` for Jev retrieval, `OPENROUTER_API_KEY` for 
 After installing dependencies, run:
 
 ```bash
-uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_pipeline backend.test_agent_endpoints -v
+uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_language backend.test_voice_activity backend.test_voice_pipeline backend.test_agent_endpoints -v
 ```
 
-The suite uses fake model responses and mocked TypeSafe/OpenRouter HTTP transports to verify call structure, retrieval limits, source validation, chat streaming, follow-up isolation, and voice cancellation.
+The suite uses fake model responses and mocked TypeSafe/OpenRouter HTTP transports to verify call structure, retrieval limits, source validation, chat streaming, follow-up isolation, voice language stability, inactivity check-ins, and voice cancellation.
 Trace tests exercise the real SDKs and exported LangSmith spans to check parent relationships, call counts, inputs/outputs, usage, failures, cancellation, and credential exclusion in both retrieval modes.
 Live answer accuracy and latency require configured API keys and a separate comparison using representative questions.
 For that comparison, include multi-document questions, fee and eligibility exceptions, Hindi/Hinglish, follow-ups, and questions absent from the corpus.
