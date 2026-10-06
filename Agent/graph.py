@@ -22,6 +22,7 @@ from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
 from .models import OpenRouterChatOpenAI as ChatOpenAI
+from .languages import VOICE_LANGUAGES
 from .prompts.prompts import (
     college_answer_system_prompt,
     college_assistant_system_prompt,
@@ -119,9 +120,18 @@ class Agent:
                 break
         return question, list(reversed(conversation))
 
-    def _answer_messages(self, state):
+    def _answer_messages(self, state, config=None):
+        system_prompt = self.system_prompt
+        language = (config or {}).get("configurable", {}).get("response_language")
+        if language in VOICE_LANGUAGES:
+            system_prompt += (
+                f"\n\nFor this voice turn, respond in {VOICE_LANGUAGES[language]} ({language}). "
+                "This is the application's accepted conversation language. "
+                "Keep it even for short or mixed-language replies and English source text. "
+                "Render greetings, clarifications, and fallback replies in this language too."
+            )
         if self.retrieval_mode == "llm":
-            return [SystemMessage(content=self.system_prompt), *state.messages]
+            return [SystemMessage(content=system_prompt), *state.messages]
         result = state.retrieval
         context = {
             "question": message_text(state.messages[-1].content),
@@ -138,7 +148,7 @@ class Agent:
             "limitation": result.get("limitation"),
         }
         return [
-            SystemMessage(content=self.system_prompt),
+            SystemMessage(content=system_prompt),
             *state.messages,
             HumanMessage(
                 content=(
@@ -192,20 +202,20 @@ class Agent:
                 )
             }
 
-        def answer(state):
+        def answer(state, config):
             return {
                 "messages": [
                     self.llm.invoke(
-                        self._answer_messages(state), config=self._model_config()
+                        self._answer_messages(state, config), config=self._model_config()
                     )
                 ]
             }
 
-        async def aanswer(state):
+        async def aanswer(state, config):
             return {
                 "messages": [
                     await self.llm.ainvoke(
-                        self._answer_messages(state), config=self._model_config()
+                        self._answer_messages(state, config), config=self._model_config()
                     )
                 ]
             }

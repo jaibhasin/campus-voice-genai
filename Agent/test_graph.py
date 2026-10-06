@@ -50,6 +50,20 @@ def make_agent(script, **kwargs):
 
 
 class GraphTests(unittest.TestCase):
+    def test_language_control_applies_in_both_modes_without_changing_chat_prompt(self):
+        agent, _, _ = make_agent([])
+        state = AgentState(messages=[HumanMessage(content="Yes")])
+        for mode in ("jev", "llm"):
+            agent.retrieval_mode = mode
+            for language, name in (("pa-IN", "Punjabi"), ("en-IN", "English"), ("hi-IN", "Hindi")):
+                messages = agent._answer_messages(state, {"configurable": {"response_language": language}})
+                self.assertIn(f"respond in {name} ({language})", messages[0].content)
+            self.assertEqual(agent._answer_messages(state)[0].content, agent.system_prompt)
+            self.assertEqual(
+                agent._answer_messages(state, {"configurable": {"response_language": "invented"}})[0].content,
+                agent.system_prompt,
+            )
+
     def test_long_conversation_retains_a_full_bounded_suffix(self):
         previous = "a" * 2000 + "₹" * 600 + " important follow-up detail"
         state = AgentState(
@@ -124,6 +138,15 @@ class GraphTests(unittest.TestCase):
 
 
 class AsyncGraphTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_language_reaches_answer_after_english_evidence(self):
+        agent, _, model = make_agent([read_first, read_first, answer("ready_to_answer")])
+        async for _ in agent.astream("ਹੋਸਟਲ ਦੀ ਫੀਸ ਕਿੰਨੀ ਹੈ?", config={"configurable": {
+            "thread_id": "punjabi", "response_language": "pa-IN",
+        }}):
+            pass
+        self.assertIn("respond in Punjabi (pa-IN)", model.calls[0][0].content)
+        self.assertIn("Hostel fees are Rs. 50000.", model.calls[0][-1].content)
+
     async def test_voice_uses_same_handoff_and_streams_only_final_answer(self):
         agent, client, model = make_agent(
             [read_first, read_first, answer("ready_to_answer")],

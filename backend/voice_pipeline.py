@@ -20,6 +20,9 @@ from sarvamai import AsyncSarvamAI
 from sarvamai.types.realtime_audio_input import RealtimeAudioInput
 from sarvamai.types.audio_output import AudioOutput
 
+from backend.voice_language import VoiceLanguage
+from backend.voice_activity import CHECK_INS, VoiceActivity
+
 # ── Config ──
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
 sarvam_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
@@ -57,7 +60,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
     agent_task = None
     tts_send_task = None
     tts_recv_task = None
-    current_language = "en-IN"   # updated dynamically from STT auto-detection
+    inactivity_task = None
+    language = VoiceLanguage()
+    activity = VoiceActivity()
     thread_id = str(uuid.uuid4())
 
     try:
@@ -135,6 +140,11 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
             try:
                 async for event in stt_ws:
                     event_type = type(event).__name__
+                    if event_type in {
+                        "RealtimeTranscriptPartial", "RealtimeTranscriptFinal",
+                        "RealtimeVadSpeechStart", "RealtimeVadSpeechEnd",
+                    }:
+                        activity.touch()
 
                     if event_type == "RealtimeTranscriptPartial":
                         await websocket.send_json({
@@ -144,47 +154,47 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
 
                     elif event_type == "RealtimeTranscriptFinal":
                         transcript = getattr(event, "text", "").strip()
-
-                        # Extract detected language from STT (if auto-detected)
-                        detected_lang = getattr(event, "language", None)
-                        if detected_lang and detected_lang != "unknown":
-                            nonlocal current_language
-                            if detected_lang != current_language:
-                                current_language = detected_lang
-                                # Reconfigure TTS for the detected language
-                                try:
-                                    await tts_ws.configure(
-                                        target_language_code=current_language,
-                                        speaker="shubh",
-                                        output_audio_codec="wav",
-                                        speech_sample_rate=22050,
-                                    )
-                                except Exception as e:
-                                    print(f"[TTS Reconfigure Error] {e}")
-
+                        activity.user_speaking = False
+                        activity.awaiting_transcript = False
                         if transcript.strip():
+                            activity.response_pending = True
+                            previous_language = language.current
+                            response_language = language.observe(
+                                transcript,
+                                getattr(event, "language", None),
+                                getattr(event, "language_confidence", None),
+                            )
                             await websocket.send_json({
                                 "type": "transcript",
                                 "text": transcript,
-                                "language_code": current_language,
+                                "language_code": response_language,
                             })
 
                             # Cancel previous agent (user barge-in)
                             nonlocal agent_task
                             if agent_task and not agent_task.done():
                                 agent_task.cancel()
+                                # Consume the child's cancellation even if it
+                                # never started; cancelling this listener still propagates.
+                                await asyncio.gather(agent_task, return_exceptions=True)
 
                             # Signal TTS handler to discard old response
                             await agent_text_queue.put("RESET")
+                            if response_language != previous_language:
+                                await agent_text_queue.put(("language", response_language))
 
                             agent_task = asyncio.create_task(
-                                run_agent(transcript)
+                                run_agent(transcript, response_language)
                             )
 
                     elif event_type == "RealtimeVadSpeechStart":
+                        activity.user_speaking = True
                         await websocket.send_json({"type": "vad_speech_start"})
 
                     elif event_type == "RealtimeVadSpeechEnd":
+                        activity.user_speaking = False
+                        # Wait for the final transcript and answer before idle.
+                        activity.awaiting_transcript = True
                         await websocket.send_json({"type": "vad_speech_end"})
 
                     elif event_type == "RealtimeSessionEnd":
@@ -196,13 +206,18 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                 print(f"[STT Event Error] {e}")
 
         # ── Agent runner ──────────────────────────────────────────────────
-        async def run_agent(text: str):
+        async def run_agent(text: str, response_language: str):
             """Run the LangGraph agent and push text tokens to the TTS queue."""
+            activity.answering = True
             try:
                 async for event in voice_agent.astream(
                     text,
-                    config={"configurable": {"thread_id": thread_id}},
+                    config={"configurable": {
+                        "thread_id": thread_id,
+                        "response_language": response_language,
+                    }},
                 ):
+                    activity.touch()
                     if event.get("type") == "token":
                         content = event["content"]
                         await websocket.send_json({
@@ -221,6 +236,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
             except Exception as e:
                 print(f"[Agent Error] {e}")
                 await agent_text_queue.put(None)
+            finally:
+                activity.answering = False
+                activity.touch()
 
         # ── TTS text sender (sends sentences as they form) ────────────────
         async def handle_tts_send():
@@ -229,6 +247,15 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
             try:
                 while True:
                     token = await agent_text_queue.get()
+
+                    if isinstance(token, tuple) and token[0] == "language":
+                        await tts_ws.configure(
+                            target_language_code=token[1],
+                            speaker="shubh",
+                            output_audio_codec="wav",
+                            speech_sample_rate=22050,
+                        )
+                        continue
 
                     # Barge-in: user interrupted — discard current buffer
                     if token == "RESET":
@@ -265,13 +292,18 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                 while True:
                     tts_event = await tts_ws.recv()
                     if isinstance(tts_event, AudioOutput):
+                        activity.touch()
                         audio_chunk = base64.b64decode(tts_event.data.audio)
                         if audio_chunk.startswith(b"RIFF"):
                             audio_chunk = audio_chunk[44:]
                         if audio_chunk:
+                            activity.playback_active = True
                             await websocket.send_bytes(pcm16_to_wav(audio_chunk))
                     elif type(tts_event).__name__ == "EventResponse":
-                        pass
+                        if tts_event.data.event_type == "final":
+                            activity.response_pending = False
+                            activity.touch()
+                            await websocket.send_json({"type": "tts_done"})
                     elif type(tts_event).__name__ == "ErrorResponse":
                         print(f"[TTS Error Response] {tts_event}")
                     # Non-audio events are silently ignored
@@ -279,6 +311,22 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                 pass
             except Exception as e:
                 print(f"[TTS Recv Error] {e}")
+
+        async def handle_inactivity():
+            while True:
+                await activity.wait_for_idle()
+                # Never substitute English for an unsupported check-in language.
+                text = CHECK_INS.get(language.current)
+                if text is None:
+                    continue
+                activity.response_pending = True
+                activity.touch()
+                await websocket.send_json({
+                    "type": "check_in", "text": text,
+                    "language_code": language.current,
+                })
+                await agent_text_queue.put(text)
+                await agent_text_queue.put(None)
 
         # ── Start STT event listener immediately ──
         stt_task = asyncio.create_task(handle_stt_events())
@@ -300,17 +348,23 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                     client_thread_id = data.get("thread_id")
                     if isinstance(client_thread_id, str) and client_thread_id.strip():
                         thread_id = client_thread_id
+                    if activity.started:
+                        continue
+                    activity.started = True
+                    activity.touch()
                     # Start TTS pipeline once the call begins
                     tts_send_task = asyncio.create_task(handle_tts_send())
                     tts_recv_task = asyncio.create_task(handle_tts_recv())
+                    inactivity_task = asyncio.create_task(handle_inactivity())
+                elif data.get("type") in {"playback_started", "playback_done"}:
+                    activity.playback_active = data["type"] == "playback_started"
+                    activity.touch()
                 elif data.get("type") == "tts":
-                    # Direct TTS request (e.g. inactivity prompt)
-                    # Route through the same serialized queue to avoid races
+                    # Direct speech must never interrupt an active conversation.
                     text = data.get("text", "").strip()
-                    if text and tts_ws:
-                        # Cancel any in-flight agent (barge-in)
-                        if agent_task and not agent_task.done():
-                            agent_task.cancel()
+                    if text and tts_ws and activity.idle:
+                        activity.response_pending = True
+                        activity.touch()
                         await agent_text_queue.put("RESET")
                         await agent_text_queue.put(text)
                         await agent_text_queue.put(None)
@@ -331,8 +385,10 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
             pass
     finally:
         # Cancel all tasks
-        for t in filter(None, [stt_task, agent_task, tts_send_task, tts_recv_task]):
+        tasks = list(filter(None, [stt_task, agent_task, tts_send_task, tts_recv_task, inactivity_task]))
+        for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         # Exit SDK-managed async connections.
         for connection in (stt_connection, tts_connection):
             if connection:

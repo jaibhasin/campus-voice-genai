@@ -23,7 +23,7 @@ function float32ToPcm16(float32Array) {
  *
  * Features:
  * 1. Multilingual matching (STT language detection passed through to TTS and agent).
- * 2. 30-second inactivity check-in prompt if user is silent.
+ * 2. Backend check-ins after 60 seconds of actual call inactivity.
  * 3. Persistent, scrollable transcription history viewable throughout the call.
  */
 export default function CallOverlay({ isOpen, onClose }) {
@@ -42,8 +42,6 @@ export default function CallOverlay({ isOpen, onClose }) {
   const activeRef = useRef(false);
   const threadIdRef = useRef(crypto.randomUUID());
   const durationTimerRef = useRef(null);
-  const inactivityTimerRef = useRef(null);
-  const detectedLanguageRef = useRef("en-IN");
   const messagesContainerRef = useRef(null);
   const endButtonRef = useRef(null);
   const callOverlayRef = useRef(null);
@@ -72,17 +70,14 @@ export default function CallOverlay({ isOpen, onClose }) {
       setCallDuration(0);
       setCallMessages([]);
       setConnectionError("");
-      detectedLanguageRef.current = "en-IN";
       durationTimerRef.current = setInterval(() => {
         setCallDuration((d) => d + 1);
       }, 1000);
     } else {
       clearInterval(durationTimerRef.current);
-      clearTimeout(inactivityTimerRef.current);
     }
     return () => {
       clearInterval(durationTimerRef.current);
-      clearTimeout(inactivityTimerRef.current);
     };
   }, [isOpen]);
 
@@ -93,37 +88,11 @@ export default function CallOverlay({ isOpen, onClose }) {
   };
 
 
-// ── Send text to backend TTS over WebSocket ──
-const sendTextToBackendTTS = useCallback((text, lang) => {
-  if (!wsRef.current) return;
-  wsRef.current.send(JSON.stringify({
-    type: "tts",
-    text: text,
-    language_code: lang || "en-IN",
-  }));
+const notifyPlayback = useCallback((type) => {
+  if (wsRef.current?.readyState === WebSocket.OPEN) {
+    wsRef.current.send(JSON.stringify({ type }));
+  }
 }, []);
-
-
-// ── 30-Second Inactivity Check-in Prompt ──
-  const handleInactivityPrompt = useCallback(async () => {
-    if (!activeRef.current || !wsRef.current) return;
-
-    const currentLang = detectedLanguageRef.current || "en-IN";
-    const checkInText = currentLang.startsWith("hi")
-      ? "मैं अभी भी आपकी बात सुन रहा हूँ! थापर यूनिवर्सिटी के बारे में आपका कोई भी सवाल है, तो आप पूछ सकते हैं।"
-      : "I'm still here on call! Feel free to ask any question about admissions, fees, hostel, or campus life at TIET.";
-
-    const msgId = crypto.randomUUID();
-    setCallMessages((prev) => [
-      ...prev,
-      { id: msgId, role: "assistant", text: checkInText },
-    ]);
-
-    setCallState("speaking");
-
-    // Use the same TTS helper as agent responses
-    sendTextToBackendTTS(checkInText, currentLang);
-  }, [sendTextToBackendTTS]);
 
 // ── Start raw PCM audio capture → WebSocket ──
 const startAudioCapture = useCallback((stream, ws) => {
@@ -205,6 +174,7 @@ const playAudioChunk = useCallback((arrayBuffer) => {
       const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
       if (playbackGeneration !== playbackGenerationRef.current) return;
 
+      if (!isPlayingAudioRef.current) notifyPlayback("playback_started");
       isPlayingAudioRef.current = true;
       setCallState("speaking");
       const scheduleTime = Math.max(ctx.currentTime + 0.02, playbackStartTimeRef.current);
@@ -219,15 +189,17 @@ const playAudioChunk = useCallback((arrayBuffer) => {
         if (playbackSourcesRef.current.size === 0) {
           playbackSourceRef.current = null;
           isPlayingAudioRef.current = false;
+          notifyPlayback("playback_done");
           setCallState("listening");
         }
       };
       source.start(scheduleTime);
     } catch (e) {
+      if (!isPlayingAudioRef.current) notifyPlayback("playback_done");
       console.warn("[Playback] Failed to decode audio chunk:", e);
     }
   });
-}, []);
+}, [notifyPlayback]);
 
 // Stop speech immediately when the user starts talking and discard buffered audio.
 const stopPlaybackForBargeIn = useCallback(() => {
@@ -242,13 +214,13 @@ const stopPlaybackForBargeIn = useCallback(() => {
   playbackSourceRef.current = null;
   playbackStartTimeRef.current = 0;
   isPlayingAudioRef.current = false;
-}, []);
+  notifyPlayback("playback_done");
+}, [notifyPlayback]);
 
   // ── Terminate Call Session ──
   const handleEndCall = useCallback(() => {
     activeRef.current = false;
     setCallState("connecting");
-    clearTimeout(inactivityTimerRef.current);
 
     // Close WebSocket
     if (wsRef.current) {
@@ -339,7 +311,6 @@ const startCallSession = useCallback(async () => {
               setConnectionError(msg.message || "Unable to connect to the voice service.");
               setCallState("error");
               activeRef.current = false;
-              clearTimeout(inactivityTimerRef.current);
               if (micStreamRef.current) {
                 micStreamRef.current.getTracks().forEach((track) => track.stop());
                 micStreamRef.current = null;
@@ -352,10 +323,6 @@ const startCallSession = useCallback(async () => {
 
             case "transcript":
               // Final transcript — add user message
-              // Also store detected language for TTS
-              if (msg.language_code) {
-                detectedLanguageRef.current = msg.language_code;
-              }
               const userMsgId = crypto.randomUUID();
               setCallMessages((prev) => [
                 ...prev,
@@ -390,6 +357,18 @@ const startCallSession = useCallback(async () => {
               }
               break;
 
+            case "check_in":
+              setCallMessages((prev) => [
+                ...prev,
+                { id: crypto.randomUUID(), role: "assistant", text: msg.text },
+              ]);
+              setCallState("speaking");
+              break;
+
+            case "tts_done":
+              if (!isPlayingAudioRef.current) setCallState("listening");
+              break;
+
             case "vad_speech_start":
               stopPlaybackForBargeIn();
               setCallState("listening");
@@ -418,19 +397,11 @@ const startCallSession = useCallback(async () => {
       handleEndCall();
     };
 
-    // Set 60s total inactivity timeout (simpler than the old 30s prompt)
-    clearTimeout(inactivityTimerRef.current);
-    inactivityTimerRef.current = setTimeout(() => {
-      if (activeRef.current) {
-        handleInactivityPrompt();
-      }
-    }, 60000);
-
   } catch (err) {
     console.error("Mic access error:", err);
     handleEndCall();
   }
-}, [handleInactivityPrompt, handleEndCall, startAudioCapture, playAudioChunk, stopPlaybackForBargeIn]);
+}, [handleEndCall, startAudioCapture, playAudioChunk, stopPlaybackForBargeIn]);
   // ── Initiate Call Session ──
   useEffect(() => {
     if (isOpen) {
@@ -440,12 +411,10 @@ const startCallSession = useCallback(async () => {
       return () => {
         clearTimeout(startupTimer);
         activeRef.current = false;
-        clearTimeout(inactivityTimerRef.current);
       };
     }
     return () => {
       activeRef.current = false;
-      clearTimeout(inactivityTimerRef.current);
     };
   }, [isOpen, startCallSession]);
 
