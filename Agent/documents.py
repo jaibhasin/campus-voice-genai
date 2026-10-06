@@ -8,15 +8,25 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "pageindex_data"
 
 
 def text_parts(text: str, max_bytes: int = 6000) -> list[str]:
-    """Keep every character while bounding the size of individual sources."""
+    """Keep every character, preferring line boundaries within each UTF-8 budget."""
     parts, current, size = [], [], 0
-    for char in text:
-        width = len(char.encode("utf-8"))
+    for line in text.splitlines(keepends=True):
+        width = len(line.encode("utf-8"))
         if current and size + width > max_bytes:
             parts.append("".join(current))
             current, size = [], 0
-        current.append(char)
-        size += width
+        if width <= max_bytes:
+            current.append(line)
+            size += width
+            continue
+        # A single oversized line still needs a hard bound, without losing characters.
+        for char in line:
+            width = len(char.encode("utf-8"))
+            if current and size + width > max_bytes:
+                parts.append("".join(current))
+                current, size = [], 0
+            current.append(char)
+            size += width
     if current:
         parts.append("".join(current))
     return parts
@@ -58,7 +68,6 @@ class DocumentStore:
         self.targets: dict[str, Target] = {}
         self.roots: list[str] = []
         for name, data in sorted(documents.items()):
-            sources = []
 
             def add_text(
                 title,
@@ -66,10 +75,10 @@ class DocumentStore:
                 summary="",
                 page=None,
                 node_id=None,
-                sources=sources,
                 document=name,
             ):
                 parts = text_parts(text)
+                sources = []
                 for index, part in enumerate(parts, 1):
                     label = (
                         f"{title} (part {index}/{len(parts)})"
@@ -87,48 +96,73 @@ class DocumentStore:
                             text=part,
                         )
                     )
+                if len(sources) > 1:
+                    return [
+                        self._outline(
+                            sources,
+                            document,
+                            title,
+                            "Read the text parts in order, including table headings and policy conditions.",
+                        )
+                    ]
+                return sources
 
             def visit(nodes, ancestors=()):
+                sections = []
                 for node in nodes:
                     title = (*ancestors, node.get("title", "Untitled section"))
+                    label = " / ".join(title)
                     text = node.get("text") or ""
+                    contents = []
                     if text.strip():
-                        add_text(
-                            " / ".join(title),
-                            text,
-                            node.get("prefix_summary") or node.get("summary") or "",
-                            node.get("page_index", node.get("start_index")),
-                            node.get("node_id"),
+                        contents.extend(
+                            add_text(
+                                label,
+                                text,
+                                node.get("prefix_summary") or node.get("summary") or "",
+                                node.get("page_index", node.get("start_index")),
+                                node.get("node_id"),
+                            )
                         )
-                    visit(node.get("nodes", []), title)
+                    children = node.get("nodes", [])
+                    contents.extend(visit(children, title))
+                    if children and contents:
+                        sections.append(
+                            self._outline(
+                                contents,
+                                name,
+                                label,
+                                node.get("prefix_summary") or node.get("summary") or "",
+                            )
+                        )
+                    else:
+                        sections.extend(contents)
+                return sections
 
-            visit(data.get("tree", {}).get("result", []))
+            sections = visit(data.get("tree", {}).get("result", []))
             # Offer original pages too: a node's text can omit a table or have gaps.
+            pages = []
             for page in data.get("pages", {}).get("result", []):
                 text = page.get("markdown") or ""
                 if text.strip():
                     number = page.get("page_index")
-                    add_text(f"Page {number}", text, text[:200], page=number)
-
-            # Wide outlines stay reachable through explicit groups, never truncation.
-            while len(sources) > 120:
-                sources = [
-                    self._add(
-                        kind="outline",
-                        document=name,
-                        title=f"Sections and pages {offset + 1}-{min(offset + 120, len(sources))}",
-                        children=tuple(sources[offset : offset + 120]),
+                    pages.extend(add_text(f"Page {number}", text, text[:200], page=number))
+            if pages:
+                sections.append(
+                    self._outline(
+                        pages,
+                        name,
+                        "Original pages",
+                        "Read original page text to check tables, footnotes, or gaps in section text.",
                     )
-                    for offset in range(0, len(sources), 120)
-                ]
+                )
             metadata = data.get("metadata", {})
             self.roots.append(
-                self._add(
-                    kind="outline",
-                    document=name,
-                    title=metadata.get("name") or name,
-                    summary=(metadata.get("description") or "")[:400],
-                    children=tuple(sources),
+                self._outline(
+                    sections,
+                    name,
+                    metadata.get("name") or name,
+                    metadata.get("description") or "",
                 )
             )
         # Also bound the initial menu when the corpus grows beyond one Choice.
@@ -143,6 +177,31 @@ class DocumentStore:
                 )
                 for offset in range(0, len(roots), 120)
             ]
+
+    def _outline(self, children, document, title, summary=""):
+        # Respect semantic sections first; only group wide sibling lists.
+        while len(children) > 12:
+            grouped = []
+            for offset in range(0, len(children), 12):
+                group = children[offset : offset + 12]
+                labels = [self.targets[key].title for key in group]
+                grouped.append(
+                    self._add(
+                        kind="outline",
+                        document=document,
+                        title=f"{labels[0]} ... {labels[-1]}",
+                        summary="Sections: " + "; ".join(labels)[:400],
+                        children=tuple(group),
+                    )
+                )
+            children = grouped
+        return self._add(
+            kind="outline",
+            document=document,
+            title=title,
+            summary=summary[:400],
+            children=tuple(children),
+        )
 
     def _add(self, **fields) -> str:
         target_id = f"t{len(self.targets):05d}"

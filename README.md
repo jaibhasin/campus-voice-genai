@@ -42,12 +42,20 @@ The backend uses `TYPESAFE_API_KEY` for Jev retrieval, `OPENROUTER_API_KEY` for 
 
 - **Flow:** Jev selects local PageIndex sources, then the LLM streams one answer using the fetched text and references.
 - **Decisions:** Each request asks `action` (`read_more` or `ready_to_answer`) and `next_read` together, using shared candidate descriptions and evidence.
-- **Sources:** Opening a document reveals sections/pages; reading them adds text to evidence.
-  Summaries guide navigation, and large sources/menus are split or paginated.
+- **Sources:** Jev chooses a document, then a section, then the actual text to read.
+  Each choice opens only that section's children, preserving the document's hierarchy.
+  Large sections are grouped into smaller lists, and original pages have their own entry.
+  Full source text is preserved across parts; splitting prefers complete lines so table headings and conditions stay together where possible.
+- **Choice lists:** Document lists show up to 24 entries, and section lists show up to 12, within a 6,000-byte menu budget.
+  Jev can request more choices, return to a parent section, switch documents, or explicitly resume the document it just left.
+  Titles and short summaries guide these choices; only fetched text supports factual answers.
 - **Conversation:** Chat and voice share this flow, with fresh evidence per question and history scoped to `thread_id`.
   Jev receives up to six recent messages (4,000 UTF-8 bytes).
+  Its request includes the last eight retrieval decisions, while the complete decision history remains available in traces and the answer handoff.
 - **Limits:** Defaults are 12 rounds, a 20-second budget checked between requests, and a 5-second HTTP timeout (also a total deadline per async request).
   Request and evidence budgets are 28,000 and 18,000 UTF-8 bytes; SDK retries are disabled.
+  Every request is measured before sending, and each new choice list is fitted around the text already read.
+  Reading another source no longer requires keeping the previous choice list alongside it.
 - **Incomplete retrieval:** Errors or exhausted limits are passed to the answer writer as limitations.
   The LLM has no retrieval tools in Jev mode, and Jev errors do not trigger an automatic LLM fallback.
 - **Compare modes:** Set `RETRIEVAL_MODE=llm` and restart the backend to use the original LLM tool-selection loop.
@@ -71,6 +79,7 @@ uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_g
 ```
 
 The suite uses fake model responses and mocked TypeSafe/OpenRouter HTTP transports to verify call structure, retrieval limits, source validation, chat streaming, follow-up isolation, voice language stability, inactivity check-ins, and voice cancellation.
+Retrieval regressions cover nested sections, wide lists, document switching and resuming, and reading a source that would have exceeded the budget with the old choice list.
 Trace tests exercise the real SDKs and exported LangSmith spans to check parent relationships, call counts, inputs/outputs, usage, failures, cancellation, and credential exclusion in both retrieval modes.
 Live answer accuracy and latency require configured API keys and a separate comparison using representative questions.
 For that comparison, include multi-document questions, fee and eligibility exceptions, Hindi/Hinglish, follow-ups, and questions absent from the corpus.
