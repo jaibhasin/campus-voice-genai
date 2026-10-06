@@ -188,7 +188,9 @@ const startAudioCapture = useCallback((stream, ws) => {
 const playAudioChunk = useCallback((arrayBuffer) => {
   const playbackGeneration = playbackGenerationRef.current;
   if (!playbackCtxRef.current) {
-    playbackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    // Match Sarvam's PCM rate so decoding preserves samples at packet boundaries.
+    // Resampling each packet separately introduces edge artifacts and audible clicks.
+    playbackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
     const analyser = playbackCtxRef.current.createAnalyser();
     analyser.fftSize = 256;
     analyser.connect(playbackCtxRef.current.destination);
