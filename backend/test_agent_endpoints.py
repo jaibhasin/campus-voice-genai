@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, Mock, patch
 from fastapi.testclient import TestClient
 
 from Agent.prompts.prompts import voice_assistant_system_prompt
-from Agent.test_graph import make_agent
-from Agent.test_retrieval import answer, read_first
 from Agent.retrieval import Retriever
-from Agent.test_retrieval import ScriptedClient, documents
+from Agent.test_graph import make_agent
+from Agent.test_retrieval import ScriptedClient, answer, documents, read_first
 from backend import main
 
 
@@ -53,14 +52,16 @@ class AgentEndpointTests(unittest.TestCase):
     def test_voice_socket_passes_provider_before_connecting_to_speech_services(self):
         for query, provider in (("", "decisions"), ("?retrieval_provider=jev", "jev")):
             with self.subTest(provider=provider):
-                async def pipeline(socket, agent, selected):
-                    self.assertEqual(selected, provider)
+                async def pipeline(socket, agent, selected, expected=provider):
+                    self.assertEqual(selected, expected)
                     await socket.accept()
                     await socket.close()
 
-                with patch("backend.voice_pipeline.voice_pipeline", side_effect=pipeline) as call:
-                    with TestClient(main.app).websocket_connect("/api/voice/ws" + query):
-                        pass
+                with (
+                    patch("backend.voice_pipeline.voice_pipeline", side_effect=pipeline) as call,
+                    TestClient(main.app).websocket_connect("/api/voice/ws" + query),
+                ):
+                    pass
                 call.assert_awaited_once()
 
     def test_stt_upload_passes_bytes_to_sdk_outside_event_loop(self):

@@ -21,8 +21,8 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
-from .models import OpenRouterChatOpenAI as ChatOpenAI
 from .languages import VOICE_LANGUAGES
+from .models import OpenRouterChatOpenAI as ChatOpenAI
 from .prompts.prompts import (
     college_answer_system_prompt,
     college_assistant_system_prompt,
@@ -246,7 +246,7 @@ class Agent:
                 ),
                 "summary_cursor": cutoff,
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 - Optional summary failures must preserve chat history.
             # Keep the old summary and cursor so a later turn can retry this exact range.
             return {}
 
@@ -271,7 +271,7 @@ class Agent:
                 ),
                 "summary_cursor": cutoff,
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 - Optional summary failures must preserve chat history.
             # Keep the old summary and cursor so a later turn can retry this exact range.
             return {}
 
@@ -340,7 +340,7 @@ class Agent:
     def _message_tokens(self, messages):
         try:
             return self.llm.get_num_tokens_from_messages(messages)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Tokenizer failures use a conservative byte estimate.
             byte_count = sum(
                 len(message_text(message.content).encode("utf-8")) + 16
                 for message in messages

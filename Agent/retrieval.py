@@ -10,9 +10,9 @@ from dataclasses import asdict, dataclass, field
 from langsmith import get_current_run_tree, traceable
 from typesafe_sdk import TypeSafeError
 
-from .documents import DocumentStore
 from .decision_tracing import _trace_inputs
 from .decisions import DecisionsClient
+from .documents import DocumentStore
 from .jev import JevClient
 
 

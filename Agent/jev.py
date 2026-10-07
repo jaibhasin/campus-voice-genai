@@ -7,7 +7,6 @@ import httpx2
 from langsmith import traceable
 from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeClient
 
-
 from .decision_tracing import _trace_inputs, _trace_model, _trace_outputs
 
 

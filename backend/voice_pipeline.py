@@ -7,8 +7,9 @@ boot-time creation stays in one place.
 """
 
 import asyncio
-import json
 import base64
+import json
+import logging
 import os
 import socket
 import struct
@@ -17,15 +18,16 @@ import uuid
 
 from fastapi import WebSocket, WebSocketDisconnect
 from sarvamai import AsyncSarvamAI
-from sarvamai.types.realtime_audio_input import RealtimeAudioInput
 from sarvamai.types.audio_output import AudioOutput
+from sarvamai.types.realtime_audio_input import RealtimeAudioInput
 
-from backend.voice_language import VoiceLanguage
 from backend.voice_activity import CHECK_INS, VoiceActivity
+from backend.voice_language import VoiceLanguage
 
 # ── Config ──
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
 sarvam_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
+logger = logging.getLogger(__name__)
 
 
 def pcm16_to_wav(pcm_audio: bytes, sample_rate: int = 22050) -> bytes:
@@ -100,14 +102,14 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                     timeout=15,
                 )
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - SDK connection failures enter bounded retries.
                 stt_error = exc
                 print(f"[VOICE] Sarvam STT attempt {attempt}/3 failed: {exc!r}")
                 if stt_connection:
                     try:
                         await stt_connection.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+                    except Exception:  # noqa: BLE001 - Cleanup must not prevent a connection retry.
+                        logger.warning("Could not close the failed STT connection")
                     stt_connection = None
                 if attempt < 3:
                     await asyncio.sleep(2 ** (attempt - 1))
@@ -203,7 +205,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
 
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Report failures at the STT task boundary.
                 print(f"[STT Event Error] {e}")
 
         # ── Agent runner ──────────────────────────────────────────────────
@@ -235,7 +237,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                         await agent_text_queue.put(None)  # signal end
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Finish the response queue on agent failure.
                 print(f"[Agent Error] {e}")
                 await agent_text_queue.put(None)
             finally:
@@ -284,7 +286,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
 
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Report failures at the TTS sender boundary.
                 print(f"[TTS Send Error] {e}")
 
         # ── TTS audio collector (listens for AudioOutput events) ──────────
@@ -311,7 +313,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                     # Non-audio events are silently ignored
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Report failures at the TTS receiver boundary.
                 print(f"[TTS Recv Error] {e}")
 
         async def handle_inactivity():
@@ -375,7 +377,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
 
     except WebSocketDisconnect:
         print("[Voice Pipeline] Client disconnected")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - The socket boundary reports recoverable service failures.
         print(f"[Voice Pipeline Error] {e!r}")
         traceback.print_exc()
         try:
@@ -383,8 +385,8 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                 "type": "voice_error",
                 "message": "Could not connect to the voice service. Please try again.",
             })
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - A disconnected socket cannot receive an error event.
+            logger.debug("Could not deliver the voice error to the browser")
     finally:
         # Cancel all tasks
         tasks = list(filter(None, [stt_task, agent_task, tts_send_task, tts_recv_task, inactivity_task]))
@@ -396,5 +398,5 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             if connection:
                 try:
                     await connection.__aexit__(None, None, None)
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 - Attempt to close every SDK connection on teardown.
+                    logger.warning("Could not close a speech service connection")

@@ -8,8 +8,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-from Agent.graph import Agent, AgentState
 from Agent.decisions import DecisionsClient
+from Agent.graph import Agent, AgentState
 from Agent.jev import JevClient
 from Agent.retrieval import Retriever
 from Agent.test_retrieval import ScriptedClient, answer, documents, read_first
