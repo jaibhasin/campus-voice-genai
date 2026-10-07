@@ -6,7 +6,10 @@ from unittest.mock import patch
 import httpx
 
 from Agent.decisions import DecisionError, DecisionsClient
-from Agent.retrieval import ACTION_QUESTION
+from Agent.graph import Agent
+from Agent.retrieval import ACTION_QUESTION, Retriever
+from Agent.test_graph import RecordingModel
+from Agent.test_retrieval import answer, documents, read_first
 from Agent.test_tracing import capture_traces
 
 QUESTIONS = {
@@ -33,6 +36,39 @@ def response_body():
 
 
 class DecisionsTests(unittest.TestCase):
+    def test_openrouter_decisions_retrieve_sources_then_call_answer_model_once(self):
+        requests = []
+        script = iter([read_first, read_first, answer("ready_to_answer")])
+
+        def respond(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            result = next(script)
+            if callable(result):
+                result = result(body["state"], body["questions"])
+            result["model"] = "openai/gpt-6-luna-decisions"
+            return httpx.Response(200, json=result)
+
+        client = DecisionsClient(api_key="test-key")
+        client._sync = httpx.Client(
+            **client._options(), transport=httpx.MockTransport(respond)
+        )
+        model = RecordingModel()
+        try:
+            with patch("Agent.graph.ChatOpenAI", return_value=model):
+                agent = Agent("Decisions", retrieval_mode="decisions", retriever=Retriever(
+                    documents(), client
+                ))
+            emitted = list(agent.stream("Hostel fees?", config={
+                "configurable": {"thread_id": "decisions-handoff"},
+            }))
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(len(model.calls), 1)
+            self.assertIn("Hostel fees are Rs. 50000.", model.calls[0][-1].content)
+            self.assertEqual(emitted[-1]["full_content"], "Grounded answer.")
+        finally:
+            client.close()
+
     def test_real_http_contract_maps_shared_multilingual_state_and_named_answers(self):
         requests = []
 
@@ -103,6 +139,29 @@ class DecisionsTests(unittest.TestCase):
 
 
 class AsyncDecisionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_failure_preserves_evidence_and_reports_incomplete_retrieval(self):
+        script = iter([read_first, read_first, None])
+
+        def respond(request):
+            body = json.loads(request.content)
+            result = next(script)
+            if result is None:
+                return httpx.Response(429, json={"error": "private upstream details"})
+            return httpx.Response(200, json=result(body["state"], body["questions"]))
+
+        client = DecisionsClient(api_key="test-key")
+        client._async = httpx.AsyncClient(
+            **client._options(), transport=httpx.MockTransport(respond)
+        )
+        try:
+            result = await Retriever(documents(), client).arun("Hostel fees?", [])
+            self.assertEqual(result.stop_reason, "decision_error")
+            self.assertEqual(result.evidence[0]["text"], "Hostel fees are Rs. 50000.")
+            self.assertIn("evidence may be incomplete", result.limitation)
+            self.assertNotIn("private upstream details", result.limitation)
+        finally:
+            await client.aclose()
+
     async def test_async_request_and_cleanup(self):
         requests = []
 
