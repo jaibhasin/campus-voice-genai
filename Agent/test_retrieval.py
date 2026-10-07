@@ -339,7 +339,7 @@ class RetrievalAsyncTests(unittest.IsolatedAsyncioTestCase):
         result = await Retriever(
             documents(), SlowClient(), RetrievalLimits(request_timeout=0.01)
         ).arun("fees", [])
-        self.assertEqual(result.stop_reason, "jev_error")
+        self.assertEqual(result.stop_reason, "decision_error")
         self.assertIn("TimeoutError", result.limitation)
 
     async def test_cancellation_propagates_to_pending_jev_request(self):
@@ -456,5 +456,5 @@ class JevTransportTests(unittest.TestCase):
         client = ScriptedClient([])
         client.decide = fail
         result = Retriever(documents(), client).run("fees", [])
-        self.assertEqual(result.stop_reason, "jev_error")
+        self.assertEqual(result.stop_reason, "decision_error")
         self.assertNotIn("secret-test-key", result.limitation)

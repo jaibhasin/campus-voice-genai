@@ -9,6 +9,8 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from pydantic import Field
 
 from Agent.graph import Agent, AgentState
+from Agent.decisions import DecisionsClient
+from Agent.jev import JevClient
 from Agent.retrieval import Retriever
 from Agent.test_retrieval import ScriptedClient, answer, documents, read_first
 
@@ -43,13 +45,44 @@ def make_agent(script, **kwargs):
         agent = Agent(
             "Test",
             retrieval_mode="jev",
-            retriever=Retriever(documents(), client),
+            retriever=Retriever(documents(), client, provider="jev"),
             **kwargs,
         )
     return agent, client, model
 
 
 class GraphTests(unittest.TestCase):
+    def test_decisions_is_default_and_jev_remains_available(self):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "Agent.graph.ChatOpenAI", return_value=RecordingModel()
+        ):
+            agent = Agent("Default")
+        self.assertIsInstance(agent.retriever.client, DecisionsClient)
+        self.assertIsInstance(agent.retrievers["jev"].client, JevClient)
+        self.assertIs(agent.retriever.store, agent.retrievers["jev"].store)
+
+    def test_provider_switch_preserves_thread_history_and_resets_evidence(self):
+        agent, jev, model = make_agent([read_first, read_first, answer("ready_to_answer")])
+        decisions = ScriptedClient([answer("ready_to_answer")])
+        agent.retrievers["decisions"] = Retriever(documents(), decisions)
+        config = {"configurable": {"thread_id": "switch", "retrieval_provider": "jev"}}
+        list(agent.stream("Hostel fees?", config=config))
+        config["configurable"]["retrieval_provider"] = "decisions"
+        list(agent.stream("And scholarships?", config=config))
+        self.assertEqual(len(jev.calls), 3)
+        self.assertEqual(len(decisions.calls), 1)
+        state = decisions.calls[0][0]
+        self.assertEqual(state["evidence"], [])
+        self.assertTrue(any(m["text"] == "Hostel fees?" for m in state["conversation"]))
+        self.assertTrue(any(m["text"] == "Grounded answer." for m in state["conversation"]))
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(agent.retrieval_mode, "jev")
+
+    def test_invalid_provider_is_rejected(self):
+        agent, _, _ = make_agent([])
+        with self.assertRaisesRegex(ValueError, "Unknown retrieval provider"):
+            agent._retriever_for({"configurable": {"retrieval_provider": "invented"}})
+
     def test_language_control_applies_in_both_modes_without_changing_chat_prompt(self):
         agent, _, _ = make_agent([])
         state = AgentState(messages=[HumanMessage(content="Yes")])
@@ -243,6 +276,27 @@ class GraphTests(unittest.TestCase):
 
 
 class AsyncGraphTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_requests_keep_provider_selection_separate(self):
+        agent, jev, model = make_agent([read_first, read_first, answer("ready_to_answer")])
+        decisions = ScriptedClient([answer("ready_to_answer")])
+        agent.retrievers["decisions"] = Retriever(documents(), decisions)
+
+        async def collect(provider, question):
+            return [event async for event in agent.astream(question, config={
+                "configurable": {"thread_id": provider, "retrieval_provider": provider},
+            })]
+
+        jev_events, decision_events = await asyncio.gather(
+            collect("jev", "Hostel fees?"), collect("decisions", "Hello")
+        )
+        self.assertEqual(jev.calls[0][0]["question"], "Hostel fees?")
+        self.assertEqual(decisions.calls[0][0]["question"], "Hello")
+        self.assertEqual(len(jev.calls), 3)
+        self.assertEqual(len(decisions.calls), 1)
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(jev_events[-1]["type"], "done")
+        self.assertEqual(decision_events[-1]["type"], "done")
+
     async def test_voice_language_reaches_answer_after_english_evidence(self):
         agent, _, model = make_agent([read_first, read_first, answer("ready_to_answer")])
         async for _ in agent.astream("ਹੋਸਟਲ ਦੀ ਫੀਸ ਕਿੰਨੀ ਹੈ?", config={"configurable": {

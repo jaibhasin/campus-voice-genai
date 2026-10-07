@@ -1,4 +1,4 @@
-"""A bounded Jev-only retrieval loop with an explicit evidence handoff."""
+"""A bounded typed-decision retrieval loop with an explicit evidence handoff."""
 
 import asyncio
 import json
@@ -11,7 +11,9 @@ from langsmith import get_current_run_tree, traceable
 from typesafe_sdk import TypeSafeError
 
 from .documents import DocumentStore
-from .jev import JevClient, _trace_inputs
+from .decision_tracing import _trace_inputs
+from .decisions import DecisionsClient
+from .jev import JevClient
 
 
 def json_bytes(value):
@@ -40,14 +42,14 @@ class RetrievalLimits:
         ):
             raise ValueError("Retrieval limits must be positive")
         if self.max_request_bytes > 28000:
-            raise ValueError("Jev request budget cannot exceed 28000 UTF-8 bytes")
+            raise ValueError("Decision request budget cannot exceed 28000 UTF-8 bytes")
 
     @classmethod
     def from_env(cls):
         return cls(
-            max_rounds=int(os.getenv("JEV_MAX_ROUNDS", "12")),
-            max_seconds=float(os.getenv("JEV_MAX_SECONDS", "20")),
-            request_timeout=float(os.getenv("JEV_REQUEST_TIMEOUT", "5")),
+            max_rounds=int(os.getenv("RETRIEVAL_MAX_ROUNDS", os.getenv("JEV_MAX_ROUNDS", "12"))),
+            max_seconds=float(os.getenv("RETRIEVAL_MAX_SECONDS", os.getenv("JEV_MAX_SECONDS", "20"))),
+            request_timeout=float(os.getenv("RETRIEVAL_REQUEST_TIMEOUT", os.getenv("JEV_REQUEST_TIMEOUT", "5"))),
         )
 
 
@@ -92,9 +94,14 @@ ACTION_QUESTION = {
 
 
 class Retriever:
-    def __init__(self, store=None, client=None, limits=None):
+    def __init__(self, store=None, client=None, limits=None, provider="decisions"):
+        if provider not in {"decisions", "jev"}:
+            raise ValueError("Unknown retrieval provider")
+        self.provider = provider
         self.store = store if store is not None else DocumentStore.load()
-        self.client = client if client is not None else JevClient()
+        self.client = client if client is not None else (
+            DecisionsClient() if provider == "decisions" else JevClient()
+        )
         self.limits = limits if limits is not None else RetrievalLimits.from_env()
 
     @traceable(
@@ -234,6 +241,9 @@ class Retriever:
     def _steps(self, question, conversation, on_fetch=None):
         """Navigate document -> section -> source, with a separate list per scope."""
         result = RetrievalResult()
+        run = get_current_run_tree()
+        if run is not None:
+            run.metadata["decision_provider"] = self.provider
         read, opened, transitions = set(), set(), set()
         path, offset, previous_document = [], 0, None
         started = time.monotonic()
@@ -283,7 +293,7 @@ class Retriever:
                 response = yield state, questions, min(remaining, self.limits.request_timeout)
             except (TypeSafeError, RuntimeError, ValueError, TimeoutError) as error:
                 return stop(
-                    "jev_error",
+                    "decision_error",
                     f"Retrieval unavailable ({type(error).__name__}); evidence may be incomplete. Do not invent missing facts.",
                 )
             if time.monotonic() - started >= self.limits.max_seconds:
@@ -396,7 +406,7 @@ class Retriever:
         return stop("round_limit", "Retrieval round limit reached; evidence may be incomplete.")
 
     @traceable(
-        name="jev_retrieval",
+        name="source_retrieval",
         process_inputs=_trace_inputs,
         process_outputs=_trace_result,
         tags=["retrieval"],
@@ -416,7 +426,7 @@ class Retriever:
                 return self._failed(steps, error)
 
     @traceable(
-        name="jev_retrieval",
+        name="source_retrieval",
         process_inputs=_trace_inputs,
         process_outputs=_trace_result,
         tags=["retrieval"],
