@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import ChatWidget from "@/components/ChatWidget";
 import CallOverlay from "@/components/CallOverlay";
+import ProviderSelect from "@/components/ProviderSelect";
 
 const QUICK_QUESTIONS = [
   { emoji: "📋", text: "How do I apply for admission?" },
@@ -19,6 +20,7 @@ export default function Home() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isCallOpen, setIsCallOpen] = useState(false);
+  const [retrievalProvider, setRetrievalProvider] = useState("decisions");
   const abortRef = useRef(null);
 
   const sendMessage = useCallback(
@@ -46,7 +48,9 @@ export default function Home() {
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, thread_id: threadId }),
+          body: JSON.stringify({
+            message: text, thread_id: threadId, retrieval_provider: retrievalProvider,
+          }),
           signal: abortRef.current.signal,
         });
 
@@ -120,7 +124,7 @@ export default function Home() {
         setIsStreaming(false);
       }
     },
-    [threadId, isStreaming, isChatOpen]
+    [threadId, isStreaming, isChatOpen, retrievalProvider]
   );
 
   const handleNewConversation = () => {
@@ -206,6 +210,13 @@ export default function Home() {
             <span className="call-scout-icon">📞</span>
             <span>Call Scout</span>
           </motion.button>
+          <div className="landing-provider">
+            <ProviderSelect
+              value={retrievalProvider}
+              onChange={setRetrievalProvider}
+              disabled={isStreaming || isCallOpen}
+            />
+          </div>
         </motion.div>
       </main>
 
@@ -223,6 +234,7 @@ export default function Home() {
       <CallOverlay
         isOpen={isCallOpen}
         onClose={() => setIsCallOpen(false)}
+        retrievalProvider={retrievalProvider}
       />
     </>
   );

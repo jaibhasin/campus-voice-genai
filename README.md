@@ -34,14 +34,23 @@ Voice answers and speech use the accepted conversation language; the agent prese
 ## Environment variables
 
 Copy `.env.example` to `.env` in the project root and fill in your keys.
-The backend uses `TYPESAFE_API_KEY` for Jev retrieval, `OPENROUTER_API_KEY` for final answers, and `SARVAM_API_KEY` for voice features.
+The backend uses `OPENROUTER_API_KEY` for both OpenAI Decisions retrieval and final answers, and `SARVAM_API_KEY` for voice features.
+Set `TYPESAFE_API_KEY` to enable the optional Jev retrieval provider.
+Keep all provider keys on the server; never use `NEXT_PUBLIC_` variables for credentials.
 
-## Jev retrieval
+## Retrieval providers
 
-Jev navigates local PageIndex documents and selects source text; the answer LLM responds using that evidence.
+OpenAI Decisions (`openai/gpt-6-luna-decisions` through OpenRouter's `POST /api/alpha/decisions`) navigates local PageIndex documents and selects source text by default; the answer LLM responds using that evidence.
+Use the compact dropdown below Call Scout to switch between Decisions and Jev.
+The selection applies to text chat and new voice calls, stays fixed during a reply or call, and resets to Decisions on a page refresh.
+Switching providers preserves the current conversation.
 Chat and voice share thread-scoped conversation summaries and recent history, with fresh retrieval for each question.
 Retrieval is bounded by round, time, and request-size limits; incomplete retrieval is passed to the answer LLM as a limitation.
-Set `RETRIEVAL_MODE=llm` to compare with the original LLM tool-selection flow.
+`RETRIEVAL_MAX_ROUNDS`, `RETRIEVAL_MAX_SECONDS`, and `RETRIEVAL_REQUEST_TIMEOUT` configure both providers; the legacy `JEV_*` limit variables remain supported.
+Chat requests accept `retrieval_provider: "decisions" | "jev"`, defaulting to `"decisions"`.
+The voice WebSocket accepts the same values in its `retrieval_provider` query parameter.
+Unavailable providers report incomplete retrieval rather than silently switching providers.
+For standalone agents, `RETRIEVAL_MODE=jev` selects Jev and `RETRIEVAL_MODE=llm` keeps the original LLM tool-selection baseline.
 
 ## LangSmith
 
@@ -60,7 +69,7 @@ Traces are grouped by `thread_id` and flushed at shutdown; they show observable 
 Run the unit suite with:
 
 ```bash
-uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_language backend.test_voice_activity backend.test_voice_pipeline backend.test_agent_endpoints -v
+uv run python -m unittest Agent.test_documents Agent.test_decisions Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_language backend.test_voice_activity backend.test_voice_pipeline backend.test_agent_endpoints -v
 ```
 
 Tests mock model providers and API calls; use configured API keys to separately evaluate live answer quality, latency, and cost on representative questions.

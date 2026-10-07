@@ -7,7 +7,8 @@ langgraph
 langchain-core
 langchain-openai
 
-# Jev retrieval decisions and tracing
+# Retrieval decisions and tracing
+httpx[http2]>=0.28,<1
 typesafe-sdk[http2]==0.7.2
 langsmith>=0.14.4
 

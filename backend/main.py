@@ -15,7 +15,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, WebSocket
@@ -108,6 +108,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    retrieval_provider: Literal["decisions", "jev"] = "decisions"
 
 
 class TTSRequest(BaseModel):
@@ -144,7 +145,7 @@ async def chat(req: ChatRequest):
     Stream agent response as Server-Sent Events (SSE).
 
     The frontend sends a user message + thread_id.
-    The agent retrieves local evidence through Jev decisions, then streams
+    The agent retrieves local evidence through the selected decision provider, then streams
     the OpenRouter answer through LangGraph:
 
     Event types:
@@ -160,7 +161,10 @@ async def chat(req: ChatRequest):
         try:
             for event in agent_instance.stream(
                 req.message,
-                config={"configurable": {"thread_id": req.thread_id}},
+                config={"configurable": {
+                    "thread_id": req.thread_id,
+                    "retrieval_provider": req.retrieval_provider,
+                }},
             ):
                 data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {data}\n\n"
@@ -198,7 +202,10 @@ async def chat_voice(req: ChatRequest):
         try:
             for event in voice_agent_instance.stream(
                 req.message,
-                config={"configurable": {"thread_id": req.thread_id}},
+                config={"configurable": {
+                    "thread_id": req.thread_id,
+                    "retrieval_provider": req.retrieval_provider,
+                }},
             ):
                 data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {data}\n\n"
@@ -304,6 +311,9 @@ async def text_to_speech(req: TTSRequest):
 
 
 @app.websocket("/api/voice/ws")
-async def voice_websocket_endpoint(websocket: WebSocket):
+async def voice_websocket_endpoint(
+    websocket: WebSocket,
+    retrieval_provider: Literal["decisions", "jev"] = "decisions",
+):
     from backend.voice_pipeline import voice_pipeline
-    await voice_pipeline(websocket, voice_agent_instance)
+    await voice_pipeline(websocket, voice_agent_instance, retrieval_provider)

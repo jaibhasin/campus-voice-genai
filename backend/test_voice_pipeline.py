@@ -6,12 +6,13 @@ import unittest
 import wave
 from unittest.mock import AsyncMock, patch
 
-from backend import voice_pipeline as voice_pipeline_module
-from backend.voice_activity import CHECK_INS, VoiceActivity
 from sarvamai.types.audio_output import AudioOutput
 from sarvamai.types.audio_output_data import AudioOutputData
 from sarvamai.types.event_response import EventResponse
 from sarvamai.types.event_response_data import EventResponseData
+
+from backend import voice_pipeline as voice_pipeline_module
+from backend.voice_activity import CHECK_INS, VoiceActivity
 
 
 class FakeConnection:
@@ -329,6 +330,12 @@ class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
         tts_socket.configure.assert_awaited_once()
 
     async def test_passes_call_thread_id_to_voice_agent(self):
+        await self.check_call_provider("decisions")
+
+    async def test_passes_selected_jev_provider_to_voice_agent(self):
+        await self.check_call_provider("jev")
+
+    async def check_call_provider(self, provider):
         transcript_event = type(
             "RealtimeTranscriptFinal",
             (),
@@ -374,7 +381,7 @@ class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
             return_value=[],
         ):
             await asyncio.wait_for(
-                voice_pipeline_module.voice_pipeline(browser, agent),
+                voice_pipeline_module.voice_pipeline(browser, agent, provider),
                 timeout=1,
             )
 
@@ -385,6 +392,7 @@ class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
                     "Hello",
                     {"config": {"configurable": {
                         "thread_id": "voice-call-123", "response_language": "en-IN",
+                        "retrieval_provider": provider,
                     }}},
                 )
             ],

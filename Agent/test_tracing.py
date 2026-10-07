@@ -82,7 +82,7 @@ class HTTPFixture:
             self.agent = Agent(
                 "Scout",
                 retrieval_mode="jev",
-                retriever=Retriever(documents(), self.jev),
+                retriever=Retriever(documents(), self.jev, provider="jev"),
             )
 
     def respond_jev(self, request):
@@ -186,7 +186,7 @@ class TraceAssertions:
             self.assertIn("end_time", span)
             if span.get("parent_run_id") is not None:
                 self.assertIn(str(span["parent_run_id"]), spans)
-        retrieval = named(spans, "jev_retrieval")[0]
+        retrieval = named(spans, "source_retrieval")[0]
         self.assertEqual(retrieval["outputs"]["stop_reason"], "ready_to_answer")
         decisions = named(spans, "jev_decision")
         self.assertEqual(len(decisions), len(fixture.jev_requests))
@@ -318,7 +318,7 @@ class SyncTraceTests(TraceAssertions, unittest.TestCase):
                 )
             self.assertIn("mock failure", named(spans, "jev_decision")[0]["error"])
             self.assertEqual(
-                named(spans, "jev_retrieval")[0]["outputs"]["stop_reason"], "jev_error"
+                named(spans, "source_retrieval")[0]["outputs"]["stop_reason"], "decision_error"
             )
             self.assertEqual(len(named(spans, "llm_answer")), 1)
             self.assertEqual(named(spans, "fetch_local_source"), [])

@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, Mock, patch
 from fastapi.testclient import TestClient
 
 from Agent.prompts.prompts import voice_assistant_system_prompt
+from Agent.retrieval import Retriever
 from Agent.test_graph import make_agent
-from Agent.test_retrieval import answer, read_first
+from Agent.test_retrieval import ScriptedClient, answer, documents, read_first
 from backend import main
 
 
@@ -21,6 +22,48 @@ def events(response):
 
 
 class AgentEndpointTests(unittest.TestCase):
+    def test_chat_and_voice_default_to_decisions_and_allow_jev(self):
+        for endpoint in ("/api/chat", "/api/chat/voice"):
+            for provider in (None, "decisions", "jev"):
+                with self.subTest(endpoint=endpoint, provider=provider):
+                    agent = Mock()
+                    agent.stream.return_value = iter([{"type": "done"}])
+                    body = {"message": "Hello", "thread_id": "selection"}
+                    if provider is not None:
+                        body["retrieval_provider"] = provider
+                    with patch.object(main, "agent_instance", agent), patch.object(
+                        main, "voice_agent_instance", agent
+                    ):
+                        response = TestClient(main.app).post(endpoint, json=body)
+                    self.assertEqual(response.status_code, 200)
+                    agent.stream.assert_called_once_with("Hello", config={"configurable": {
+                        "thread_id": "selection", "retrieval_provider": provider or "decisions",
+                    }})
+
+    def test_invalid_chat_provider_is_rejected_before_agent_call(self):
+        agent = Mock()
+        with patch.object(main, "agent_instance", agent):
+            response = TestClient(main.app).post("/api/chat", json={
+                "message": "Hello", "retrieval_provider": "invented",
+            })
+        self.assertEqual(response.status_code, 422)
+        agent.stream.assert_not_called()
+
+    def test_voice_socket_passes_provider_before_connecting_to_speech_services(self):
+        for query, provider in (("", "decisions"), ("?retrieval_provider=jev", "jev")):
+            with self.subTest(provider=provider):
+                async def pipeline(socket, agent, selected, expected=provider):
+                    self.assertEqual(selected, expected)
+                    await socket.accept()
+                    await socket.close()
+
+                with (
+                    patch("backend.voice_pipeline.voice_pipeline", side_effect=pipeline) as call,
+                    TestClient(main.app).websocket_connect("/api/voice/ws" + query),
+                ):
+                    pass
+                call.assert_awaited_once()
+
     def test_stt_upload_passes_bytes_to_sdk_outside_event_loop(self):
         def transcribe(**kwargs):
             self.assertRaises(RuntimeError, asyncio.get_running_loop)
@@ -74,6 +117,7 @@ class AgentEndpointTests(unittest.TestCase):
                 json={
                     "message": "Hostel fees?",
                     "thread_id": "endpoint-chat",
+                    "retrieval_provider": "jev",
                 },
             )
         self.assertEqual(response.status_code, 200)
@@ -90,6 +134,9 @@ class AgentEndpointTests(unittest.TestCase):
     def test_voice_endpoint_uses_evidence_only_voice_prompt(self):
         agent, _jev, model = make_agent(
             [answer("ready_to_answer")], system_prompt=voice_assistant_system_prompt
+        )
+        agent.retrievers["decisions"] = Retriever(
+            documents(), ScriptedClient([answer("ready_to_answer")])
         )
         with patch.object(main, "voice_agent_instance", agent):
             response = TestClient(main.app).post(

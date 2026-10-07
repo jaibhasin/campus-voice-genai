@@ -1,4 +1,4 @@
-"""Shared chat/voice graph: Jev retrieves evidence, the LLM writes the answer."""
+"""Shared chat/voice graph: typed decisions retrieve evidence, the LLM writes the answer."""
 
 import json
 import os
@@ -21,8 +21,8 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
-from .models import OpenRouterChatOpenAI as ChatOpenAI
 from .languages import VOICE_LANGUAGES
+from .models import OpenRouterChatOpenAI as ChatOpenAI
 from .prompts.prompts import (
     college_answer_system_prompt,
     college_assistant_system_prompt,
@@ -93,18 +93,18 @@ class Agent:
             if answer_response_reserve_tokens is not None
             else int(os.getenv("ANSWER_RESPONSE_RESERVE_TOKENS", "1500"))
         )
-        self.retrieval_mode = retrieval_mode or os.getenv("RETRIEVAL_MODE", "jev")
-        if self.retrieval_mode not in {"jev", "llm"}:
-            raise ValueError("RETRIEVAL_MODE must be 'jev' or 'llm'")
+        self.retrieval_mode = retrieval_mode or os.getenv("RETRIEVAL_MODE", "decisions")
+        if self.retrieval_mode not in {"decisions", "jev", "llm"}:
+            raise ValueError("RETRIEVAL_MODE must be 'decisions', 'jev', or 'llm'")
         if system_prompt is None:
             self.system_prompt = (
                 college_answer_system_prompt
-                if self.retrieval_mode == "jev"
+                if self.retrieval_mode != "llm"
                 else college_assistant_system_prompt
             )
         elif (
             system_prompt == voice_assistant_system_prompt
-            and self.retrieval_mode == "jev"
+            and self.retrieval_mode != "llm"
         ):
             self.system_prompt = voice_answer_system_prompt
         else:
@@ -112,8 +112,15 @@ class Agent:
         self.retriever = (
             retriever
             if retriever is not None
-            else (Retriever() if self.retrieval_mode == "jev" else None)
+            else (Retriever(provider=self.retrieval_mode) if self.retrieval_mode != "llm" else None)
         )
+        self.retrievers = {}
+        if self.retriever is not None:
+            self.retrievers[self.retrieval_mode] = self.retriever
+            other = "jev" if self.retrieval_mode == "decisions" else "decisions"
+            self.retrievers[other] = Retriever(
+                store=self.retriever.store, limits=self.retriever.limits, provider=other
+            )
         self.llm = ChatOpenAI(
             model=model,
             api_key=os.getenv("OPENROUTER_API_KEY", ""),
@@ -239,7 +246,7 @@ class Agent:
                 ),
                 "summary_cursor": cutoff,
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 - Optional summary failures must preserve chat history.
             # Keep the old summary and cursor so a later turn can retry this exact range.
             return {}
 
@@ -264,7 +271,7 @@ class Agent:
                 ),
                 "summary_cursor": cutoff,
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 - Optional summary failures must preserve chat history.
             # Keep the old summary and cursor so a later turn can retry this exact range.
             return {}
 
@@ -333,7 +340,7 @@ class Agent:
     def _message_tokens(self, messages):
         try:
             return self.llm.get_num_tokens_from_messages(messages)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Tokenizer failures use a conservative byte estimate.
             byte_count = sum(
                 len(message_text(message.content).encode("utf-8")) + 16
                 for message in messages
@@ -462,23 +469,23 @@ class Agent:
         async def aupdate_summary(state):
             return await self._asummary_update(state)
 
-        def retrieve(state):
+        def retrieve(state, config):
             question, conversation = self._retrieval_input(
                 state, state.conversation_summary, state.summary_cursor
             )
             return {
                 "retrieval": asdict(
-                    self.retriever.run(question, conversation, on_fetch=self._progress)
+                    self._retriever_for(config).run(question, conversation, on_fetch=self._progress)
                 )
             }
 
-        async def aretrieve(state):
+        async def aretrieve(state, config):
             question, conversation = self._retrieval_input(
                 state, state.conversation_summary, state.summary_cursor
             )
             return {
                 "retrieval": asdict(
-                    await self.retriever.arun(
+                    await self._retriever_for(config).arun(
                         question, conversation, on_fetch=self._progress
                     )
                 )
@@ -508,7 +515,7 @@ class Agent:
             RunnableLambda(update_summary, afunc=aupdate_summary),
         )
         workflow.add_node("answer", RunnableLambda(answer, afunc=aanswer))
-        if self.retrieval_mode == "jev":
+        if self.retrieval_mode != "llm":
             workflow.add_node("retrieve", RunnableLambda(retrieve, afunc=aretrieve))
             workflow.add_edge(START, "conversation_memory")
             workflow.add_edge("conversation_memory", "retrieve")
@@ -526,9 +533,17 @@ class Agent:
             workflow.add_edge("tools", "answer")
         return workflow.compile(checkpointer=MemorySaver())
 
+    def _retriever_for(self, config):
+        provider = (config or {}).get("configurable", {}).get(
+            "retrieval_provider", self.retrieval_mode
+        )
+        if provider not in self.retrievers:
+            raise ValueError("Unknown retrieval provider")
+        return self.retrievers[provider]
+
     def _model_config(self):
         return {
-            "run_name": "llm_answer" if self.retrieval_mode == "jev" else "llm_agent",
+            "run_name": "llm_answer" if self.retrieval_mode != "llm" else "llm_agent",
             "tags": ["openrouter"],
             "metadata": {"ls_provider": "openrouter", "ls_model_name": self.model},
         }
@@ -539,6 +554,9 @@ class Agent:
         config["metadata"] = {
             "agent_name": self.name,
             "retrieval_mode": self.retrieval_mode,
+            "retrieval_provider": config.get("configurable", {}).get(
+                "retrieval_provider", self.retrieval_mode
+            ),
             **config.get("metadata", {}),
         }
         return config
@@ -606,8 +624,8 @@ class Agent:
         yield {"type": "done", "full_content": content, "tool_calls": calls}
 
     async def aclose(self):
-        if self.retriever is not None:
-            await self.retriever.client.aclose()
+        for retriever in self.retrievers.values():
+            await retriever.client.aclose()
 
     def inspect_graph(self):
         import tempfile
