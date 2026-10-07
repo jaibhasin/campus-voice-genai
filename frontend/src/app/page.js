@@ -136,13 +136,6 @@ export default function Home() {
       {/* Blurred Background Image */}
       <div className="bg-image" />
       <div className="bg-overlay" />
-      <div className="landing-provider">
-        <ProviderSelect
-          value={retrievalProvider}
-          onChange={setRetrievalProvider}
-          disabled={isStreaming || isCallOpen}
-        />
-      </div>
 
       {/* Landing Content */}
       <main className="landing">
@@ -217,6 +210,13 @@ export default function Home() {
             <span className="call-scout-icon">📞</span>
             <span>Call Scout</span>
           </motion.button>
+          <div className="landing-provider">
+            <ProviderSelect
+              value={retrievalProvider}
+              onChange={setRetrievalProvider}
+              disabled={isStreaming || isCallOpen}
+            />
+          </div>
         </motion.div>
       </main>
 
