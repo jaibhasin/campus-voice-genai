@@ -9,7 +9,6 @@ from Agent.decisions import DecisionError, DecisionsClient
 from Agent.retrieval import ACTION_QUESTION
 from Agent.test_tracing import capture_traces
 
-
 QUESTIONS = {
     "action": ACTION_QUESTION,
     "next_read": {
@@ -22,14 +21,14 @@ QUESTIONS = {
 
 def response_body():
     return {
-        "model": "gpt-6-luna",
-        "answers": [
-            {"type": "choice", "name": "action", "choice": "read_more",
-             "confidence": 0.9, "probabilities": []},
-            {"type": "choice", "name": "next_read", "choice": "fees",
-             "confidence": 0.9, "probabilities": []},
-        ],
-        "usage": {"input_tokens": 100, "output_tokens": 0},
+        "model": "openai/gpt-6-luna-decisions",
+        "answers": {
+            "action": {"type": "choice", "choice": "read_more",
+                       "confidence": 0.9, "probabilities": {"read_more": 0.95, "ready_to_answer": 0.05}},
+            "next_read": {"type": "choice", "choice": "fees",
+                          "confidence": 0.9, "probabilities": {"fees": 0.95, "awards": 0.05}},
+        },
+        "usage": {"input_tokens": 100, "output_tokens": 0, "cost": 0.00001},
     }
 
 
@@ -50,17 +49,15 @@ class DecisionsTests(unittest.TestCase):
             with capture_traces() as spans:
                 result = client.decide(state, QUESTIONS, 2)
             self.assertEqual(len(requests), 1)
-            self.assertEqual(str(requests[0].url), "https://api.openai.com/v1/decisions")
+            self.assertEqual(str(requests[0].url), "https://openrouter.ai/api/alpha/decisions")
             payload = json.loads(requests[0].content)
-            self.assertEqual(payload["model"], "gpt-6-luna")
-            self.assertEqual(json.loads(payload["input"]), state)
-            self.assertEqual([q["name"] for q in payload["questions"]], list(QUESTIONS))
-            self.assertEqual(payload["questions"][1]["choices"][0], {
-                "value": "fees", "description": "Tuition and hostel fees.",
-            })
+            self.assertEqual(payload["model"], "openai/gpt-6-luna-decisions")
+            self.assertEqual(payload["state"], state)
+            self.assertEqual(payload["questions"], QUESTIONS)
+            self.assertEqual(payload["questions"]["next_read"]["criteria"]["fees"], "Tuition and hostel fees.")
             self.assertEqual(result["answers"]["next_read"]["choice"], "fees")
             span = next(s for s in spans.values() if s["name"] == "openai_decision")
-            self.assertEqual(span["extra"]["metadata"]["ls_provider"], "openai")
+            self.assertEqual(span["extra"]["metadata"]["ls_provider"], "openrouter")
             self.assertEqual(span["outputs"]["usage_metadata"]["output_tokens"], 0)
             self.assertNotIn(client.api_key, json.dumps(spans, default=str))
         finally:
@@ -84,19 +81,21 @@ class DecisionsTests(unittest.TestCase):
         finally:
             client.close()
 
-    def test_missing_key_does_not_use_openrouter_credentials(self):
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "", "OPENROUTER_API_KEY": "other"}):
-            with self.assertRaisesRegex(DecisionError, "Missing OPENAI_API_KEY"):
-                DecisionsClient().decide({}, QUESTIONS, 1)
+    def test_missing_openrouter_key_does_not_use_direct_openai_credentials(self):
+        with (
+            patch.dict("os.environ", {"OPENROUTER_API_KEY": "", "OPENAI_API_KEY": "other"}),
+            self.assertRaisesRegex(DecisionError, "Missing OPENROUTER_API_KEY"),
+        ):
+            DecisionsClient().decide({}, QUESTIONS, 1)
 
     def test_malformed_answers_are_rejected_and_refusals_are_preserved(self):
-        for answers in ([], response_body()["answers"] * 2, {}, [None]):
+        for answers in ([], {}, {"unexpected": {"type": "choice"}}, [None]):
             with self.subTest(answers=answers), self.assertRaises((KeyError, TypeError, ValueError)):
                 DecisionsClient._response(httpx.Response(
                     200, json={"answers": answers}, request=httpx.Request("POST", "https://example.test")
                 ), QUESTIONS)
         body = response_body()
-        body["answers"][0] = {"name": "action", "type": "refusal"}
+        body["answers"]["action"] = {"type": "refusal"}
         result = DecisionsClient._response(httpx.Response(
             200, json=body, request=httpx.Request("POST", "https://example.test")
         ), QUESTIONS)

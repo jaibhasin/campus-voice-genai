@@ -1,6 +1,5 @@
-"""OpenAI Decisions adapter for the bounded PageIndex retrieval controller."""
+"""OpenRouter adapter for OpenAI Decisions and the bounded PageIndex retrieval controller."""
 
-import json
 import os
 import threading
 
@@ -17,50 +16,34 @@ class DecisionError(RuntimeError):
 class DecisionsClient:
     def __init__(self, api_key=None):
         self.api_key = api_key
-        self.model = "gpt-6-luna"
+        self.model = "openai/gpt-6-luna-decisions"
         self._sync = None
         self._async = None
         self._init_lock = threading.Lock()
 
     def _options(self):
-        key = self.api_key or os.getenv("OPENAI_API_KEY", "")
+        key = self.api_key or os.getenv("OPENROUTER_API_KEY", "")
         if not key.strip():
-            raise DecisionError("Missing OPENAI_API_KEY")
+            raise DecisionError("Missing OPENROUTER_API_KEY")
         return {
-            "base_url": "https://api.openai.com/v1/",
+            "base_url": "https://openrouter.ai/api/alpha/",
             "headers": {"Authorization": f"Bearer {key}"},
             "http2": True,
         }
 
     def _payload(self, state, questions):
-        return {
-            "model": self.model,
-            "input": json.dumps(state, ensure_ascii=False),
-            "questions": [
-                {
-                    "name": name,
-                    "type": "choice",
-                    "instructions": question["instructions"],
-                    "choices": [
-                        {"value": value, "description": description}
-                        for value, description in question["criteria"].items()
-                    ],
-                }
-                for name, question in questions.items()
-            ],
-        }
+        return {"model": self.model, "state": state, "questions": questions}
 
     @staticmethod
     def _response(response, questions):
         response.raise_for_status()
         result = response.json()
         answers = result["answers"]
-        if not isinstance(answers, list):
-            raise ValueError("Expected named decision answers")
-        named = {answer["name"]: answer for answer in answers}
-        if len(named) != len(answers) or set(named) != set(questions):
-            raise ValueError("Missing, duplicate, or unexpected decision answers")
-        return {**result, "answers": named}
+        if not isinstance(answers, dict):
+            raise TypeError("Expected named decision answers")
+        if set(answers) != set(questions):
+            raise ValueError("Missing or unexpected decision answers")
+        return result
 
     @traceable(
         name="openai_decision",
@@ -70,7 +53,7 @@ class DecisionsClient:
         tags=["openai", "retrieval"],
     )
     def decide(self, state, questions, timeout):
-        _trace_model(self.model, "openai")
+        _trace_model(self.model, "openrouter")
         with self._init_lock:
             if self._sync is None:
                 self._sync = httpx.Client(**self._options())
@@ -90,7 +73,7 @@ class DecisionsClient:
         tags=["openai", "retrieval"],
     )
     async def adecide(self, state, questions, timeout):
-        _trace_model(self.model, "openai")
+        _trace_model(self.model, "openrouter")
         with self._init_lock:
             if self._async is None:
                 self._async = httpx.AsyncClient(**self._options())
