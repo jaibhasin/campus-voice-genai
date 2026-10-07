@@ -43,12 +43,13 @@ def pcm16_to_wav(pcm_audio: bytes, sample_rate: int = 22050) -> bytes:
     ))
 
 
-async def voice_pipeline(websocket: WebSocket, voice_agent):
+async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="decisions"):
     """Handle a single voice call session over WebSocket.
 
     Args:
         websocket: The FastAPI WebSocket for this session.
         voice_agent: An Agent instance (must have an async ``astream`` method).
+        retrieval_provider: The decision provider fixed for this call session.
     """
     await websocket.accept()
 
@@ -215,6 +216,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                     config={"configurable": {
                         "thread_id": thread_id,
                         "response_language": response_language,
+                        "retrieval_provider": retrieval_provider,
                     }},
                 ):
                     activity.touch()
