@@ -3,6 +3,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceOrb from "./VoiceOrb";
+import { createVoicePlayback, VOICE_PROTOCOL_VERSION } from "../lib/voicePlayback.mjs";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -46,17 +47,9 @@ export default function CallOverlay({ isOpen, onClose }) {
   const endButtonRef = useRef(null);
   const callOverlayRef = useRef(null);
 
-  // Audio playback queue (sequential decoded audio buffers, gapless playback via Web Audio API)
-  const audioPlaybackQueue = useRef([]);
-  const isPlayingAudioRef = useRef(false);
-  const playbackSourceRef = useRef(null);         // Current AudioBufferSourceNode
-  const playbackSourcesRef = useRef(new Set());  // All scheduled sources
-  const playbackGenerationRef = useRef(0);        // Invalidates old finish timers
-  const playbackDecodeChainRef = useRef(Promise.resolve()); // Preserves audio chunk order
-  const playbackStartTimeRef = useRef(0);          // When current playback started (context time)
+  const playbackRef = useRef(null);
   const playbackAnalyserRef = useRef(null);
-  const playbackCtxRef = useRef(null);              // Shared AudioContext for playback
-
+  const sessionVersionRef = useRef(0);
 
   // Auto-scroll transcript container to bottom
   useEffect(() => {
@@ -87,12 +80,6 @@ export default function CallOverlay({ isOpen, onClose }) {
     return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
   };
 
-
-const notifyPlayback = useCallback((type) => {
-  if (wsRef.current?.readyState === WebSocket.OPEN) {
-    wsRef.current.send(JSON.stringify({ type }));
-  }
-}, []);
 
 // ── Start raw PCM audio capture → WebSocket ──
 const startAudioCapture = useCallback((stream, ws) => {
@@ -153,270 +140,235 @@ const startAudioCapture = useCallback((stream, ws) => {
   processor.connect(audioCtx.destination);
 }, []);
 
-// ── Audio playback queue (gapless via Web Audio API) ──
-const playAudioChunk = useCallback((arrayBuffer) => {
-  const playbackGeneration = playbackGenerationRef.current;
-  if (!playbackCtxRef.current) {
-    // Match Sarvam's PCM rate so decoding preserves samples at packet boundaries.
-    // Resampling each packet separately introduces edge artifacts and audible clicks.
-    playbackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
-    const analyser = playbackCtxRef.current.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.connect(playbackCtxRef.current.destination);
-    playbackAnalyserRef.current = analyser;
-    playbackStartTimeRef.current = playbackCtxRef.current.currentTime;
-  }
-  const ctx = playbackCtxRef.current;
-
-  playbackDecodeChainRef.current = playbackDecodeChainRef.current.then(async () => {
-    if (playbackGeneration !== playbackGenerationRef.current) return;
-    try {
-      const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-      if (playbackGeneration !== playbackGenerationRef.current) return;
-
-      if (!isPlayingAudioRef.current) notifyPlayback("playback_started");
-      isPlayingAudioRef.current = true;
-      setCallState("speaking");
-      const scheduleTime = Math.max(ctx.currentTime + 0.02, playbackStartTimeRef.current);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(playbackAnalyserRef.current);
-      playbackSourcesRef.current.add(source);
-      playbackStartTimeRef.current = scheduleTime + buffer.duration;
-      playbackSourceRef.current = source;
-      source.onended = () => {
-        playbackSourcesRef.current.delete(source);
-        if (playbackSourcesRef.current.size === 0) {
-          playbackSourceRef.current = null;
-          isPlayingAudioRef.current = false;
-          notifyPlayback("playback_done");
-          setCallState("listening");
-        }
-      };
-      source.start(scheduleTime);
-    } catch (e) {
-      if (!isPlayingAudioRef.current) notifyPlayback("playback_done");
-      console.warn("[Playback] Failed to decode audio chunk:", e);
-    }
-  });
-}, [notifyPlayback]);
-
-// Stop speech immediately when the user starts talking and discard buffered audio.
-const stopPlaybackForBargeIn = useCallback(() => {
-  playbackGenerationRef.current += 1;
-  audioPlaybackQueue.current.length = 0;
-  playbackDecodeChainRef.current = Promise.resolve();
-  for (const source of playbackSourcesRef.current) {
-    try { source.stop(); } catch (_) {}
-    try { source.disconnect(); } catch (_) {}
-  }
-  playbackSourcesRef.current.clear();
-  playbackSourceRef.current = null;
-  playbackStartTimeRef.current = 0;
-  isPlayingAudioRef.current = false;
-  notifyPlayback("playback_done");
-}, [notifyPlayback]);
-
-  // ── Terminate Call Session ──
-  const handleEndCall = useCallback(() => {
+  // Tear down every resource on end, errors, external close, or unmount.
+  const releaseCallResources = useCallback(() => {
     activeRef.current = false;
+    sessionVersionRef.current += 1;
+    clearInterval(durationTimerRef.current);
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "end_call" }));
+      }
+      ws.close();
+    }
+    processorRef.current?.disconnect();
+    if (processorRef.current) processorRef.current.onaudioprocess = null;
+    processorRef.current = null;
+    micStreamRef.current?.getTracks().forEach((track) => track.stop());
+    micStreamRef.current = null;
+    playbackRef.current?.dispose();
+    playbackRef.current = null;
+    if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
+    audioCtxRef.current = null;
+  }, []);
+
+  const handleEndCall = useCallback(() => {
+    releaseCallResources();
+    setCallState("connecting");
+    onCloseRef.current();
+  }, [releaseCallResources]);
+
+  const startCallSession = useCallback(async () => {
+    if (!activeRef.current) return;
+    const sessionVersion = sessionVersionRef.current;
+    const isCurrentSession = () => activeRef.current && sessionVersionRef.current === sessionVersion;
+    const failCall = (message) => {
+      if (!isCurrentSession()) return;
+      releaseCallResources();
+      setConnectionError(message || "Unable to connect to the voice service.");
+      setCallState("error");
+    };
     setCallState("connecting");
 
-    // Close WebSocket
-    if (wsRef.current) {
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "end_call" }));
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+      if (!isCurrentSession()) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
       }
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
-    // Stop mic
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
-
-    // Stop audio playback & clear queue
-    stopPlaybackForBargeIn();
-
-    // Close Playback AudioContext (separate from mic capture context)
-    if (playbackCtxRef.current) {
-      playbackCtxRef.current.close();
-      playbackCtxRef.current = null;
-      playbackAnalyserRef.current = null;
-    }
-
-    // Close AudioContext
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close();
-      audioCtxRef.current = null;
-    }
-
-    onCloseRef.current();
-  }, [stopPlaybackForBargeIn]);
-
-
-// ── Start WebSocket Call (replaces old startListening) ──
-const startCallSession = useCallback(async () => {
-  if (!activeRef.current) return;
-
-  setCallState("connecting");
-
-  // 1. Get mic stream for raw PCM capture
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        sampleRate: 16000,
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-      },
-    });
-    micStreamRef.current = stream;
-
-    // 2. Open WebSocket
-    const wsUrl = API_URL.replace(/^http/, "ws") + "/api/voice/ws";
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.binaryType = "arraybuffer";
-
-    // Send partial transcript updates to state
-    let assistantMsgId = null;
-
-    ws.onopen = () => {
-      setCallState("connecting");
-      ws.send(JSON.stringify({
-        type: "start_call",
-        thread_id: threadIdRef.current,
-      }));
-      startAudioCapture(stream, ws);
-    };
-
-    ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        // Binary audio chunk from TTS — play it
-        playAudioChunk(event.data);
-      } else {
-        // JSON event
-        try {
-          const msg = JSON.parse(event.data);
-          switch (msg.type) {
-            case "voice_ready":
-              setCallState("listening");
-              break;
-
-            case "voice_error":
-              console.error("Voice service error:", msg.message);
-              setConnectionError(msg.message || "Unable to connect to the voice service.");
-              setCallState("error");
-              activeRef.current = false;
-              if (micStreamRef.current) {
-                micStreamRef.current.getTracks().forEach((track) => track.stop());
-                micStreamRef.current = null;
-              }
-              break;
-
-            case "partial_transcript":
-              // Optionally show partial transcript in UI
-              break;
-
-            case "transcript":
-              // Final transcript — add user message
-              const userMsgId = crypto.randomUUID();
-              setCallMessages((prev) => [
-                ...prev,
-                { id: userMsgId, role: "user", text: msg.text },
-              ]);
-              // Create placeholder for assistant
-              assistantMsgId = crypto.randomUUID();
-              setCallMessages((prev) => [
-                ...prev,
-                { id: assistantMsgId, role: "assistant", text: "" },
-              ]);
-              setCallState("thinking");
-              break;
-
-            case "agent_token":
-              if (assistantMsgId) {
-                setCallMessages((prev) => prev.map((message) =>
-                  message.id === assistantMsgId
-                    ? { ...message, text: message.text + (msg.content || "") }
-                    : message
-                ));
-              }
-              break;
-
-            case "agent_done":
-              if (assistantMsgId && msg.full_content) {
-                setCallMessages((prev) => prev.map((message) =>
-                  message.id === assistantMsgId && !message.text
-                    ? { ...message, text: msg.full_content }
-                    : message
-                ));
-              }
-              break;
-
-            case "check_in":
-              setCallMessages((prev) => [
-                ...prev,
-                { id: crypto.randomUUID(), role: "assistant", text: msg.text },
-              ]);
-              setCallState("speaking");
-              break;
-
-            case "tts_done":
-              if (!isPlayingAudioRef.current) setCallState("listening");
-              break;
-
-            case "vad_speech_start":
-              stopPlaybackForBargeIn();
-              setCallState("listening");
-              break;
-
-            case "vad_speech_end":
-            case "speech_end":
-              // Sarvam detected end of speech and is preparing the final transcript
-              setCallState("processing");
-              break;
+      micStreamRef.current = stream;
+      const ws = new WebSocket(API_URL.replace(/^http/, "ws") + "/api/voice/ws");
+      wsRef.current = ws;
+      ws.binaryType = "arraybuffer";
+      let ready = false;
+      let interruptionEnabled = false;
+      let userSpeaking = false;
+      let decisionPending = false;
+      let utteranceId = 0;
+      let assistantMsgId = null;
+      const playback = createVoicePlayback({
+        createContext: () => new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 }),
+        notify: (type, responseId, currentUtteranceId) => {
+          if (isCurrentSession() && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type, response_id: responseId, utterance_id: currentUtteranceId }));
           }
-        } catch (e) {
-          // ignore parse errors
-        }
-      }
-    };
-
-    ws.onclose = () => {
-      if (activeRef.current) {
-        handleEndCall();
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.error("WebSocket error:", err);
-      handleEndCall();
-    };
-
-  } catch (err) {
-    console.error("Mic access error:", err);
-    handleEndCall();
-  }
-}, [handleEndCall, startAudioCapture, playAudioChunk, stopPlaybackForBargeIn]);
-  // ── Initiate Call Session ──
-  useEffect(() => {
-    if (isOpen) {
-      activeRef.current = true;
-      threadIdRef.current = crypto.randomUUID();
-      const startupTimer = setTimeout(() => startCallSession(), 600);
-      return () => {
-        clearTimeout(startupTimer);
-        activeRef.current = false;
+        },
+        onState: (state) => {
+          if (!isCurrentSession()) return;
+          if (state === "speaking" && (userSpeaking || decisionPending)) return;
+          setCallState(decisionPending ? "processing" : state);
+        },
+        onAnalyser: (analyser) => {
+          if (isCurrentSession() || analyser === null) playbackAnalyserRef.current = analyser;
+        },
+        onError: (error) => failCall(error.message),
+      });
+      playbackRef.current = playback;
+      const appendUser = (text) => {
+        setCallMessages((messages) => [...messages, { id: crypto.randomUUID(), role: "user", text }]);
       };
+      const clearEmptyAssistant = () => {
+        const ownedMessageId = assistantMsgId;
+        if (ownedMessageId) {
+          setCallMessages((messages) => messages.filter((message) => message.id !== ownedMessageId || message.text));
+        }
+        assistantMsgId = null;
+      };
+      const acceptsUtterance = (msg) => {
+        if (!playback.accepts(msg.response_id)) return false;
+        if (Number.isInteger(msg.utterance_id) && msg.utterance_id < utteranceId) return false;
+        if (Number.isInteger(msg.utterance_id)) utteranceId = msg.utterance_id;
+        return true;
+      };
+
+      ws.onopen = () => {
+        if (!isCurrentSession()) return;
+        ws.send(JSON.stringify({ type: "start_call", protocol_version: VOICE_PROTOCOL_VERSION, thread_id: threadIdRef.current }));
+        try { startAudioCapture(stream, ws); } catch (error) { failCall(error.message); }
+      };
+      ws.onmessage = (event) => {
+        if (!isCurrentSession()) return;
+        if (event.data instanceof ArrayBuffer) {
+          if (!ready) {
+            failCall("The voice service sent audio before connecting. Please reload and try again.");
+            return;
+          }
+          playback.enqueue(event.data);
+          return;
+        }
+        let msg;
+        try { msg = JSON.parse(event.data); } catch { return; }
+        switch (msg.type) {
+          case "voice_ready":
+            if (msg.protocol_version !== VOICE_PROTOCOL_VERSION) {
+              failCall("The voice service needs an update. Please reload and try again.");
+              break;
+            }
+            ready = true;
+            interruptionEnabled = msg.interruption_enabled === true;
+            setCallState("listening");
+            break;
+          case "voice_error":
+            failCall(msg.message);
+            break;
+          case "response_started":
+            if (!playback.begin(msg.response_id)) break;
+            assistantMsgId = null;
+            decisionPending = false;
+            break;
+          case "response_cancelled":
+            if (!playback.cancel(msg.response_id)) break;
+            clearEmptyAssistant();
+            decisionPending = false;
+            break;
+          case "transcript":
+            if (!playback.accepts(msg.response_id)) break;
+            userSpeaking = false;
+            decisionPending = false;
+            appendUser(msg.text);
+            assistantMsgId = crypto.randomUUID();
+            {
+              const ownedMessageId = assistantMsgId;
+              setCallMessages((messages) => [...messages, { id: ownedMessageId, role: "assistant", text: "" }]);
+            }
+            setCallState("thinking");
+            break;
+          case "acknowledgment":
+            if (!acceptsUtterance(msg)) break;
+            userSpeaking = false;
+            decisionPending = false;
+            appendUser(msg.text);
+            setCallState(playback.playing ? "speaking" : "listening");
+            break;
+          case "interruption_pending":
+            if (!acceptsUtterance(msg)) break;
+            decisionPending = true;
+            if (!playback.playing) setCallState("processing");
+            break;
+          case "playback_pause":
+            if (!acceptsUtterance(msg)) break;
+            playback.pause(msg.response_id, msg.utterance_id);
+            break;
+          case "playback_resume":
+            if (!acceptsUtterance(msg)) break;
+            userSpeaking = false;
+            decisionPending = false;
+            playback.resume(msg.response_id, msg.utterance_id);
+            break;
+          case "agent_token":
+            if (!playback.accepts(msg.response_id) || !assistantMsgId) break;
+            {
+              const ownedMessageId = assistantMsgId;
+              setCallMessages((messages) => messages.map((message) => message.id === ownedMessageId
+                ? { ...message, text: message.text + (msg.content || "") } : message));
+            }
+            break;
+          case "agent_done":
+            if (!playback.accepts(msg.response_id) || !assistantMsgId || !msg.full_content) break;
+            {
+              const ownedMessageId = assistantMsgId;
+              setCallMessages((messages) => messages.map((message) => message.id === ownedMessageId && !message.text
+                ? { ...message, text: msg.full_content } : message));
+            }
+            break;
+          case "check_in":
+            if (!playback.accepts(msg.response_id)) break;
+            setCallMessages((messages) => [...messages, { id: crypto.randomUUID(), role: "assistant", text: msg.text }]);
+            break;
+          case "tts_done":
+            playback.done(msg.response_id);
+            break;
+          case "vad_speech_start":
+            userSpeaking = true;
+            if (Number.isInteger(msg.utterance_id)) utteranceId = Math.max(utteranceId, msg.utterance_id);
+            if (!interruptionEnabled) {
+              playback.cancel(playback.responseId);
+              clearEmptyAssistant();
+              setCallState("listening");
+            } else if (!playback.playing) {
+              setCallState("listening");
+            }
+            break;
+          case "vad_speech_end":
+          case "speech_end":
+            userSpeaking = false;
+            if (!interruptionEnabled || !playback.playing) setCallState("processing");
+            break;
+        }
+      };
+      ws.onclose = () => failCall("The call disconnected. Please start a new call.");
+      ws.onerror = () => failCall("Unable to connect to the voice service.");
+    } catch (error) {
+      failCall(error.name === "NotAllowedError" ? "Microphone access is required to start a call." : error.message);
     }
+  }, [releaseCallResources, startAudioCapture]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    activeRef.current = true;
+    sessionVersionRef.current += 1;
+    threadIdRef.current = crypto.randomUUID();
+    const startupTimer = setTimeout(startCallSession, 600);
     return () => {
-      activeRef.current = false;
+      clearTimeout(startupTimer);
+      releaseCallResources();
     };
-  }, [isOpen, startCallSession]);
+  }, [isOpen, startCallSession, releaseCallResources]);
 
   useEffect(() => {
     if (!isOpen) return;
