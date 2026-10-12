@@ -1,11 +1,13 @@
 import asyncio
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from backend.voice_interruption import (
     ACTION_QUESTION,
     MAX_REQUEST_BYTES,
     VoiceInterruptionClassifier,
+    _trace_summary,
 )
 
 
@@ -19,6 +21,30 @@ class VoiceInterruptionTests(unittest.IsolatedAsyncioTestCase):
         client.adecide = AsyncMock(return_value=response, side_effect=side_effect)
         client.aclose = AsyncMock()
         return client
+
+    def test_trace_summary_adds_thread_metadata_without_transcript_or_credentials(self):
+        run = SimpleNamespace(metadata={})
+        inputs = {
+            "text": "caller transcript must not be logged",
+            "context": {
+                "thread_id": "conversation-123",
+                "overlap": True,
+                "last_user_text": "private earlier transcript",
+            },
+            "language": "en-IN",
+            "response_id": 2,
+            "utterance_id": 3,
+            "api_key": "secret-api-key",
+        }
+
+        with patch("backend.voice_interruption.get_current_run_tree", return_value=run):
+            summary = _trace_summary(inputs)
+
+        self.assertEqual(summary["thread_id"], "conversation-123")
+        self.assertEqual(run.metadata, {"thread_id": "conversation-123"})
+        self.assertNotIn("caller transcript must not be logged", str(summary))
+        self.assertNotIn("private earlier transcript", str(summary))
+        self.assertNotIn("secret-api-key", str(summary))
 
     async def test_submits_one_typed_decision_with_complete_utterance_and_context(self):
         client = self.make_client(result("take_turn", confidence=0.72, probabilities={"take_turn": 0.72}))

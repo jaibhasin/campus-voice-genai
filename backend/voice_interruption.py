@@ -5,7 +5,7 @@ import json
 import time
 from dataclasses import dataclass
 
-from langsmith import traceable
+from langsmith import get_current_run_tree, traceable
 
 from Agent.jev import JevClient
 
@@ -63,13 +63,19 @@ def _trace_summary(inputs):
     context = inputs.get("context") or {}
     if not isinstance(context, dict):
         context = {}
-    return {
+    thread_id = context.get("thread_id")
+    summary = {
         "utterance_bytes": len(text.encode("utf-8")) if isinstance(text, str) else 0,
         "response_id": inputs.get("response_id"),
         "utterance_id": inputs.get("utterance_id"),
         "language": inputs.get("language"),
         "overlap": context.get("overlap"),
+        "thread_id": thread_id,
     }
+    run = get_current_run_tree()
+    if run is not None and thread_id is not None:
+        run.metadata.update({"thread_id": thread_id})
+    return summary
 
 
 def _trace_decision(result):
