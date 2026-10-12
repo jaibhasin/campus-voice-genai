@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 from backend.voice_interruption import (
     ACTION_QUESTION,
     MAX_REQUEST_BYTES,
-    InterruptionDecision,
     VoiceInterruptionClassifier,
 )
 
@@ -68,6 +67,27 @@ class VoiceInterruptionTests(unittest.IsolatedAsyncioTestCase):
             )
             client.adecide.assert_awaited_once()
             self.assertEqual(decision.choice, "take_turn")
+
+    async def test_acknowledgment_cannot_swallow_answer_to_assistant_question(self):
+        client = self.make_client(result("acknowledgment", confidence=0.97))
+        classifier = VoiceInterruptionClassifier(client=client)
+
+        decision = await classifier.classify(
+            "okay",
+            {
+                "assistant_text": "Would you like me to compare CSE and ECE?",
+                "answer_requested": True,
+                "overlap": True,
+            },
+        )
+
+        client.adecide.assert_awaited_once()
+        request_state = client.adecide.await_args.args[0]
+        self.assertTrue(request_state["answer_requested"])
+        self.assertEqual(decision.choice, "uncertain")
+        self.assertEqual(decision.fallback_reason, "answer_requested")
+        self.assertEqual(decision.confidence, 0.97)
+        self.assertTrue(decision.takes_turn)
 
     async def test_malformed_or_disallowed_output_falls_back_to_take_turn(self):
         for response in (
