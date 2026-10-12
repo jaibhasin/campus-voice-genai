@@ -90,7 +90,9 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
                 buffer += token
                 while buffer:
                     boundary = re.search(r"[.!?।](?:\s|$)", buffer)
-                    cut = boundary.end() if boundary else (400 if len(buffer) >= 400 else 0)
+                    cut = boundary.end() if boundary else 0
+                    if not cut and len(buffer) >= 400:
+                        cut = buffer.rfind(" ", 0, 400) + 1 or 400
                     if not cut:
                         break
                     sentence, buffer = buffer[:cut].strip(), buffer[cut:]
@@ -138,6 +140,6 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
                 task.cancel()
         await asyncio.gather(*children, return_exceptions=True)
         try:
-            await connection.__aexit__(None, None, None)
+            await asyncio.wait_for(connection.__aexit__(None, None, None), timeout=2)
         except Exception:
             pass

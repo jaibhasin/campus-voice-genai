@@ -1,398 +1,496 @@
-"""
-WebSocket-based voice pipeline for Scout.
-Bridges browser audio <-> Sarvam streaming STT <-> Agent <-> Sarvam streaming TTS.
-
-The Agent instance must be passed in from the caller (e.g. main.py) so that
-boot-time creation stays in one place.
-"""
+"""Call-scoped STT and response-scoped generation, synthesis, and turn decisions."""
 
 import asyncio
-import json
 import base64
+import json
 import os
 import socket
-import struct
-import traceback
 import uuid
 
 from fastapi import WebSocket, WebSocketDisconnect
 from sarvamai import AsyncSarvamAI
 from sarvamai.types.realtime_audio_input import RealtimeAudioInput
-from sarvamai.types.audio_output import AudioOutput
 
-from backend.voice_language import VoiceLanguage
 from backend.voice_activity import CHECK_INS, VoiceActivity
+from backend.voice_interruption import VoiceInterruptionClassifier
+from backend.voice_language import VoiceLanguage
+from backend.voice_response import PROTOCOL_VERSION, VoiceResponse, pcm16_to_wav, synthesize_response
 
-# ── Config ──
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
-sarvam_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
+
+sarvam_client = AsyncSarvamAI(api_subscription_key=os.getenv("SARVAM_API_KEY", ""))
 
 
-def pcm16_to_wav(pcm_audio: bytes, sample_rate: int = 22050) -> bytes:
-    """Wrap mono PCM16 bytes as a complete WAV file for browser decoding."""
-    data_size = len(pcm_audio)
-    byte_rate = sample_rate * 2
-    return b"".join((
-        b"RIFF",
-        struct.pack("<I", 36 + data_size),
-        b"WAVEfmt ",
-        struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, byte_rate, 2, 16),
-        b"data",
-        struct.pack("<I", data_size),
-        pcm_audio,
-    ))
+def configured_ms(name, default, minimum=1, maximum=10000):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value)) / 1000
 
 
 async def voice_pipeline(websocket: WebSocket, voice_agent):
-    """Handle a single voice call session over WebSocket.
-
-    Args:
-        websocket: The FastAPI WebSocket for this session.
-        voice_agent: An Agent instance (must have an async ``astream`` method).
-    """
+    """Retain the current response until an overlapping utterance takes a turn."""
     await websocket.accept()
-
-    stt_ws = None
-    tts_ws = None
+    enabled = os.getenv("VOICE_INTERRUPTION_ENABLED", "false").lower() in {"true", "1", "yes"}
+    grace = configured_ms("VOICE_INTERRUPTION_GRACE_MS", 350, minimum=0, maximum=2000)
+    timeout = configured_ms("VOICE_INTERRUPTION_TIMEOUT_MS", 1000, maximum=5000)
+    transcript_timeout = configured_ms("VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS", 1500, maximum=5000)
+    classifier = None
     stt_connection = None
-    tts_connection = None
+    stt_ws = None
     stt_task = None
-    agent_task = None
-    tts_send_task = None
-    tts_recv_task = None
     inactivity_task = None
+    decision_task = None
+    grace_task = None
+    watchdog_task = None
+    response = None
+    response_counter = 0
+    utterance_id = 0
+    utterance_open = False
+    overlap_response_id = None
+    fragments = []
+    detected_language = None
+    detected_confidence = None
+    last_user_text = ""
+    recent_history = []
+    response_lock = asyncio.Lock()
+    background_tasks = set()
     language = VoiceLanguage()
     activity = VoiceActivity()
     thread_id = str(uuid.uuid4())
 
-    try:
-        # ── 1. Open Sarvam STT realtime streaming connection ──
-        print("[VOICE] Connecting to Sarvam STT...")
-        try:
-            await asyncio.wait_for(
-                asyncio.get_running_loop().getaddrinfo(
-                    "api.sarvam.ai",
-                    443,
-                    type=socket.SOCK_STREAM,
-                ),
-                timeout=5,
-            )
-            print("[VOICE] Sarvam hostname resolved")
-        except Exception as exc:
-            print(f"[VOICE] Sarvam DNS preflight failed: {exc!r}")
-            raise
+    def owns(owner):
+        return response is owner and not owner.cancelled
 
-        stt_error = None
-        for attempt in range(1, 4):
+    def launch(coroutine):
+        task = asyncio.create_task(coroutine)
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return task
+
+    async def emit(kind, owner=None, **fields):
+        message = {"type": kind, **fields}
+        if owner is not None:
+            message["response_id"] = owner.response_id
+        await websocket.send_json(message)
+
+    def stop_task(task):
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def stop_timers():
+        stop_task(grace_task)
+        stop_task(watchdog_task)
+
+    async def cancel_response():
+        if response is None or response.cancelled:
+            return
+        owner = response
+        owner.cancelled = True
+        # Announce discard before waiting for provider cleanup.
+        await emit("response_cancelled", owner)
+        await owner.cancel()
+        if response is owner:
+            activity.answering = False
+            activity.response_pending = False
+            activity.playback_active = False
+            activity.playback_paused = False
+            activity.touch()
+
+    async def resume(uid):
+        if uid != utterance_id or activity.user_speaking:
+            return
+        activity.interruption_pending = False
+        activity.awaiting_transcript = False
+        if response and owns(response):
+            response.playable.set()
+            if activity.playback_paused:
+                activity.playback_paused = False
+                await emit("playback_resume", response, utterance_id=uid)
+        activity.touch()
+
+    async def pause_after_grace(uid, owner):
+        await asyncio.sleep(grace)
+        if uid != utterance_id or not owns(owner):
+            return
+        if activity.user_speaking or activity.interruption_pending or activity.awaiting_transcript:
+            owner.playable.clear()
+            activity.playback_paused = True
+            activity.touch()
+            await emit("playback_pause", owner, utterance_id=uid)
+
+    def schedule_grace(uid):
+        nonlocal grace_task
+        stop_task(grace_task)
+        if response and owns(response):
+            grace_task = launch(pause_after_grace(uid, response))
+
+    async def start_response(text, response_language, *, accepted=False, check_in=False, accepted_uid=None):
+        nonlocal response, response_counter
+        async with response_lock:
+            if not accepted and not activity.idle:
+                return
+            if accepted_uid is not None and accepted_uid != utterance_id:
+                return
+            await cancel_response()
+            if not accepted and not activity.idle:
+                return
+            if accepted_uid is not None and accepted_uid != utterance_id:
+                return
+            response_counter += 1
+            owner = VoiceResponse(response_counter, response_language)
+            response = owner
+            activity.response_pending = True
+            activity.touch()
+            await emit("response_started", owner)
+            if accepted:
+                await emit("transcript", owner, text=text, language_code=response_language)
+            elif check_in:
+                await emit("check_in", owner, text=text, language_code=response_language)
+
+        async def scoped_json(message):
+            if owns(owner):
+                if message["type"] == "tts_done":
+                    activity.response_pending = False
+                    if not owner.audio_sent:
+                        activity.playback_active = False
+                    activity.touch()
+                await websocket.send_json(message)
+
+        async def scoped_bytes(packet):
+            if owns(owner):
+                await websocket.send_bytes(packet)
+
+        def on_audio(_owner):
+            if owns(owner):
+                activity.playback_active = True
+                activity.touch()
+
+        async def producer():
+            if not accepted:
+                owner.generated_text = text[-6000:]
+                await owner.put_text(text)
+                await owner.text_queue.put(None)
+                return
+            activity.answering = True
+            activity.touch()
+            completed = False
+            try:
+                async for event in voice_agent.astream(text, config={"configurable": {
+                    "thread_id": thread_id, "response_language": response_language,
+                }}):
+                    if not owns(owner):
+                        return
+                    activity.touch()
+                    if event.get("type") == "token":
+                        content = event.get("content", "")
+                        owner.generated_text = (owner.generated_text + content)[-6000:]
+                        await emit("agent_token", owner, content=content)
+                        await owner.put_text(content)
+                    elif event.get("type") == "done":
+                        completed = True
+                        await emit("agent_done", owner, full_content=event.get("full_content", ""))
+                        recent_history.append({"role": "assistant", "text": owner.generated_text[-800:]})
+                        del recent_history[:-6]
+                if not completed and owns(owner):
+                    await emit("agent_done", owner, full_content=owner.generated_text)
+                await owner.text_queue.put(None)
+            finally:
+                if owns(owner):
+                    activity.answering = False
+                    activity.touch()
+
+        async def run():
+            try:
+                await synthesize_response(owner, sarvam_client, scoped_json, scoped_bytes, on_audio, producer)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if owns(owner):
+                    owner.cancelled = True
+                    await emit("response_cancelled", owner)
+                    activity.answering = False
+                    activity.response_pending = False
+                    activity.playback_active = False
+                    activity.playback_paused = False
+                    activity.touch()
+                    await emit("voice_error", owner, message="Speech failed. Please try again.")
+
+        if owns(owner):
+            owner.task = asyncio.create_task(run())
+
+    async def accept_turn(text, detected, confidence):
+        nonlocal last_user_text, fragments, overlap_response_id, utterance_open
+        stop_timers()
+        stop_task(decision_task)
+        fragments = []
+        overlap_response_id = None
+        utterance_open = False
+        activity.user_speaking = False
+        activity.awaiting_transcript = False
+        activity.interruption_pending = False
+        activity.response_pending = True
+        response_language = language.observe(text, detected, confidence)
+        last_user_text = text
+        recent_history.append({"role": "user", "text": text[-800:]})
+        del recent_history[:-6]
+        await start_response(text, response_language, accepted=True, accepted_uid=utterance_id)
+
+    async def classify_utterance(uid, owner, text, detected, confidence):
+        nonlocal fragments, overlap_response_id, utterance_open
+        context = {
+            "assistant_text": owner.generated_text,
+            "recent_history": list(recent_history),
+            "last_user_text": last_user_text,
+            "overlap": True,
+            "answer_requested": "?" in owner.generated_text or "？" in owner.generated_text,
+            "thread_id": thread_id,
+        }
+        try:
+            # Defend the call lifecycle even if an injected classifier misses its deadline.
+            result = await asyncio.wait_for(classifier.classify(
+                text, context, language=detected,
+                response_id=owner.response_id, utterance_id=uid,
+            ), timeout=timeout)
+            takes_turn = result.takes_turn
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            takes_turn = True
+        if uid != utterance_id or not owns(owner) or activity.user_speaking:
+            return
+        stop_timers()
+        if takes_turn:
+            await accept_turn(text, detected, confidence)
+        else:
+            fragments = []
+            overlap_response_id = None
+            utterance_open = False
+            await emit("acknowledgment", owner, text=text, utterance_id=uid)
+            await resume(uid)
+
+    async def decide_pending():
+        nonlocal decision_task
+        owner = response
+        text = " ".join(fragments)
+        if not text:
+            return
+        if enabled and owner and owns(owner) and overlap_response_id == owner.response_id:
+            activity.interruption_pending = True
+            activity.touch()
+            await emit("interruption_pending", owner, utterance_id=utterance_id)
+            decision_task = launch(classify_utterance(
+                utterance_id, owner, text, detected_language, detected_confidence,
+            ))
+            # A final without VAD still gets a bounded pause if the decision is slow.
+            if grace_task is None or grace_task.done():
+                schedule_grace(utterance_id)
+        else:
+            await accept_turn(text, detected_language, detected_confidence)
+
+    async def transcript_watchdog(uid):
+        nonlocal utterance_open, overlap_response_id
+        await asyncio.sleep(transcript_timeout)
+        if uid != utterance_id or activity.user_speaking:
+            return
+        activity.awaiting_transcript = False
+        if fragments:
+            # A newer empty utterance cannot erase an earlier pending question.
+            await decide_pending()
+        else:
+            utterance_open = False
+            overlap_response_id = None
+            stop_task(grace_task)
+            await resume(uid)
+
+    def schedule_watchdog(uid):
+        nonlocal watchdog_task
+        stop_task(watchdog_task)
+        watchdog_task = launch(transcript_watchdog(uid))
+
+    async def handle_stt_events():
+        nonlocal utterance_id, utterance_open, overlap_response_id
+        nonlocal detected_language, detected_confidence
+        try:
+            async for event in stt_ws:
+                event_type = type(event).__name__
+                if event_type.startswith("RealtimeTranscript") or event_type.startswith("RealtimeVad"):
+                    activity.touch()
+                if event_type == "RealtimeTranscriptPartial":
+                    await emit("partial_transcript", text=getattr(event, "text", ""), utterance_id=utterance_id)
+                elif event_type == "RealtimeVadSpeechStart":
+                    utterance_id += 1
+                    utterance_open = True
+                    stop_task(decision_task)
+                    stop_timers()
+                    activity.user_speaking = True
+                    activity.awaiting_transcript = False
+                    audible = activity.playback_active or activity.playback_paused
+                    if response and owns(response) and audible:
+                        overlap_response_id = response.response_id
+                    if enabled and overlap_response_id is not None:
+                        activity.interruption_pending = True
+                        schedule_grace(utterance_id)
+                    await emit("vad_speech_start", response, utterance_id=utterance_id)
+                    if not enabled:
+                        await cancel_response()
+                elif event_type == "RealtimeVadSpeechEnd":
+                    activity.user_speaking = False
+                    activity.awaiting_transcript = True
+                    await emit("vad_speech_end", response, utterance_id=utterance_id)
+                    schedule_watchdog(utterance_id)
+                elif event_type == "RealtimeTranscriptFinal":
+                    transcript = getattr(event, "text", "").strip()
+                    activity.user_speaking = False
+                    activity.awaiting_transcript = False
+                    stop_task(watchdog_task)
+                    if not transcript:
+                        if fragments:
+                            await decide_pending()
+                        else:
+                            stop_task(grace_task)
+                            utterance_open = False
+                            overlap_response_id = None
+                            await resume(utterance_id)
+                        continue
+                    if not utterance_open or (decision_task and not decision_task.done()):
+                        utterance_id += 1
+                        stop_task(decision_task)
+                        stop_task(grace_task)
+                        if not utterance_open and response and owns(response) and (
+                            activity.playback_active or activity.playback_paused
+                        ):
+                            overlap_response_id = response.response_id
+                        utterance_open = True
+                        if enabled and overlap_response_id is not None:
+                            schedule_grace(utterance_id)
+                    fragments.append(transcript)
+                    detected_language = getattr(event, "language", None)
+                    detected_confidence = getattr(event, "language_confidence", None)
+                    await decide_pending()
+                elif event_type == "RealtimeSessionEnd":
+                    await emit("voice_error", message="Speech recognition ended. Please reconnect.")
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await emit("voice_error", message="Speech recognition failed. Please reconnect.")
+
+    async def handle_inactivity():
+        while True:
+            await activity.wait_for_idle()
+            # The wait can finish immediately before an STT event changes activity.
+            if not activity.idle:
+                continue
+            text = CHECK_INS.get(language.current)
+            if text is None:
+                activity.touch()
+                continue
+            await start_response(text, language.current, check_in=True)
+
+    try:
+        # Pin compatibility before contacting providers or starting call tasks.
+        initial = await asyncio.wait_for(websocket.receive(), timeout=15)
+        if "text" not in initial:
+            await emit("voice_error", message="Voice protocol 2 is required. Refresh and retry.")
+            return
+        setup = json.loads(initial["text"])
+        if setup.get("type") != "start_call" or type(setup.get("protocol_version")) is not int or setup["protocol_version"] != PROTOCOL_VERSION:
+            await emit("voice_error", message="Voice protocol 2 is required. Refresh and retry.")
+            return
+        requested_thread = setup.get("thread_id")
+        if isinstance(requested_thread, str) and requested_thread.strip():
+            thread_id = requested_thread
+        await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(
+            "api.sarvam.ai", 443, type=socket.SOCK_STREAM,
+        ), timeout=5)
+        for attempt in range(3):
             try:
                 stt_connection = sarvam_client.speech_to_text_realtime_streaming.connect(
-                    language_code="auto",
-                    model="saaras:v3-realtime",
-                    stream_type="fast",       # lowest latency
-                    mode="transcribe",
-                    encoding="linear16",      # PCM16 signed 16-bit
-                    sample_rate="16000",
-                    endpointing="vad",        # Sarvam handles VAD
+                    language_code="auto", model="saaras:v3-realtime", stream_type="fast",
+                    mode="transcribe", encoding="linear16", sample_rate="16000", endpointing="vad",
                 )
-                stt_ws = await asyncio.wait_for(
-                    stt_connection.__aenter__(),
-                    timeout=15,
-                )
+                stt_ws = await asyncio.wait_for(stt_connection.__aenter__(), timeout=15)
                 break
-            except Exception as exc:
-                stt_error = exc
-                print(f"[VOICE] Sarvam STT attempt {attempt}/3 failed: {exc!r}")
+            except Exception:
                 if stt_connection:
                     try:
-                        await stt_connection.__aexit__(None, None, None)
+                        await asyncio.wait_for(stt_connection.__aexit__(None, None, None), timeout=2)
                     except Exception:
                         pass
                     stt_connection = None
-                if attempt < 3:
-                    await asyncio.sleep(2 ** (attempt - 1))
-        if stt_ws is None:
-            raise stt_error
-        print("[VOICE] Sarvam STT connected")
-
-        # ── 2. Open Sarvam TTS streaming connection ──
-        print("[VOICE] Connecting to Sarvam TTS...")
-        tts_connection = sarvam_client.text_to_speech_streaming.connect(
-            model="bulbul:v3",
-            send_completion_event="true",
-        )
-        tts_ws = await tts_connection.__aenter__()
-        await tts_ws.configure(
-            target_language_code="en-IN",
-            speaker="shubh",
-            output_audio_codec="wav",
-            speech_sample_rate=22050,
-        )
-        print("[VOICE] Sarvam TTS connected and configured")
-        await websocket.send_json({"type": "voice_ready"})
-        print("[VOICE] Browser marked ready")
-
-        # ── Queues ──
-        agent_text_queue: asyncio.Queue = asyncio.Queue()   # agent tokens → TTS sender
-
-        # ── STT event handler ─────────────────────────────────────────────
-        async def handle_stt_events():
-            """Listen for Sarvam STT events and trigger agent on final transcript."""
-            try:
-                async for event in stt_ws:
-                    event_type = type(event).__name__
-                    if event_type in {
-                        "RealtimeTranscriptPartial", "RealtimeTranscriptFinal",
-                        "RealtimeVadSpeechStart", "RealtimeVadSpeechEnd",
-                    }:
-                        activity.touch()
-
-                    if event_type == "RealtimeTranscriptPartial":
-                        await websocket.send_json({
-                            "type": "partial_transcript",
-                            "text": getattr(event, "text", ""),
-                        })
-
-                    elif event_type == "RealtimeTranscriptFinal":
-                        transcript = getattr(event, "text", "").strip()
-                        activity.user_speaking = False
-                        activity.awaiting_transcript = False
-                        if transcript.strip():
-                            activity.response_pending = True
-                            previous_language = language.current
-                            response_language = language.observe(
-                                transcript,
-                                getattr(event, "language", None),
-                                getattr(event, "language_confidence", None),
-                            )
-                            await websocket.send_json({
-                                "type": "transcript",
-                                "text": transcript,
-                                "language_code": response_language,
-                            })
-
-                            # Cancel previous agent (user barge-in)
-                            nonlocal agent_task
-                            if agent_task and not agent_task.done():
-                                agent_task.cancel()
-                                # Consume the child's cancellation even if it
-                                # never started; cancelling this listener still propagates.
-                                await asyncio.gather(agent_task, return_exceptions=True)
-
-                            # Signal TTS handler to discard old response
-                            await agent_text_queue.put("RESET")
-                            if response_language != previous_language:
-                                await agent_text_queue.put(("language", response_language))
-
-                            agent_task = asyncio.create_task(
-                                run_agent(transcript, response_language)
-                            )
-
-                    elif event_type == "RealtimeVadSpeechStart":
-                        activity.user_speaking = True
-                        await websocket.send_json({"type": "vad_speech_start"})
-
-                    elif event_type == "RealtimeVadSpeechEnd":
-                        activity.user_speaking = False
-                        # Wait for the final transcript and answer before idle.
-                        activity.awaiting_transcript = True
-                        await websocket.send_json({"type": "vad_speech_end"})
-
-                    elif event_type == "RealtimeSessionEnd":
-                        break
-
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                print(f"[STT Event Error] {e}")
-
-        # ── Agent runner ──────────────────────────────────────────────────
-        async def run_agent(text: str, response_language: str):
-            """Run the LangGraph agent and push text tokens to the TTS queue."""
-            activity.answering = True
-            try:
-                async for event in voice_agent.astream(
-                    text,
-                    config={"configurable": {
-                        "thread_id": thread_id,
-                        "response_language": response_language,
-                    }},
-                ):
-                    activity.touch()
-                    if event.get("type") == "token":
-                        content = event["content"]
-                        await websocket.send_json({
-                            "type": "agent_token",
-                            "content": content,
-                        })
-                        await agent_text_queue.put(content)
-                    elif event.get("type") == "done":
-                        await websocket.send_json({
-                            "type": "agent_done",
-                            "full_content": event.get("full_content", ""),
-                        })
-                        await agent_text_queue.put(None)  # signal end
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                print(f"[Agent Error] {e}")
-                await agent_text_queue.put(None)
-            finally:
-                activity.answering = False
-                activity.touch()
-
-        # ── TTS text sender (sends sentences as they form) ────────────────
-        async def handle_tts_send():
-            """Read tokens from agent_text_queue, form sentences, send to TTS."""
-            buffer = ""
-            try:
-                while True:
-                    token = await agent_text_queue.get()
-
-                    if isinstance(token, tuple) and token[0] == "language":
-                        await tts_ws.configure(
-                            target_language_code=token[1],
-                            speaker="shubh",
-                            output_audio_codec="wav",
-                            speech_sample_rate=22050,
-                        )
-                        continue
-
-                    # Barge-in: user interrupted — discard current buffer
-                    if token == "RESET":
-                        buffer = ""
-                        continue
-
-                    if token is None:
-                        if buffer.strip():
-                            await tts_ws.convert(buffer.strip())
-                            buffer = ""
-                        await tts_ws.flush()
-                        continue
-
-                    buffer += token
-                    # Split on common sentence boundaries
-                    for sep in (". ", "! ", "? ", "। "):
-                        parts = buffer.split(sep)
-                        if len(parts) > 1:
-                            for p in parts[:-1]:
-                                if p.strip():
-                                    await tts_ws.convert(p.strip() + sep.strip())
-                            buffer = parts[-1]
-                            break  # only split on the first matched separator
-
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                print(f"[TTS Send Error] {e}")
-
-        # ── TTS audio collector (listens for AudioOutput events) ──────────
-        async def handle_tts_recv():
-            """Listen for TTS audio responses and forward to browser."""
-            try:
-                while True:
-                    tts_event = await tts_ws.recv()
-                    if isinstance(tts_event, AudioOutput):
-                        activity.touch()
-                        audio_chunk = base64.b64decode(tts_event.data.audio)
-                        if audio_chunk.startswith(b"RIFF"):
-                            audio_chunk = audio_chunk[44:]
-                        if audio_chunk:
-                            activity.playback_active = True
-                            await websocket.send_bytes(pcm16_to_wav(audio_chunk))
-                    elif type(tts_event).__name__ == "EventResponse":
-                        if tts_event.data.event_type == "final":
-                            activity.response_pending = False
-                            activity.touch()
-                            await websocket.send_json({"type": "tts_done"})
-                    elif type(tts_event).__name__ == "ErrorResponse":
-                        print(f"[TTS Error Response] {tts_event}")
-                    # Non-audio events are silently ignored
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                print(f"[TTS Recv Error] {e}")
-
-        async def handle_inactivity():
-            while True:
-                await activity.wait_for_idle()
-                # Never substitute English for an unsupported check-in language.
-                text = CHECK_INS.get(language.current)
-                if text is None:
-                    continue
-                activity.response_pending = True
-                activity.touch()
-                await websocket.send_json({
-                    "type": "check_in", "text": text,
-                    "language_code": language.current,
-                })
-                await agent_text_queue.put(text)
-                await agent_text_queue.put(None)
-
-        # ── Start STT event listener immediately ──
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+        classifier = VoiceInterruptionClassifier(timeout=timeout) if enabled else None
+        activity.started = True
+        activity.touch()
+        await emit("voice_ready", protocol_version=PROTOCOL_VERSION,
+                   interruption_enabled=enabled, grace_ms=round(grace * 1000))
         stt_task = asyncio.create_task(handle_stt_events())
-
-        # ── Main loop: receive audio from browser, forward to Sarvam STT ──
+        inactivity_task = asyncio.create_task(handle_inactivity())
         while True:
             message = await websocket.receive()
-
-            if "bytes" in message:
-                # Binary PCM16 audio frames from browser → Sarvam STT
-                await stt_ws.send_realtime_audio_input(
-                    RealtimeAudioInput(
-                        audio=base64.b64encode(message["bytes"]).decode("utf-8")
-                    )
-                )
-            elif "text" in message:
+            if message.get("type") == "websocket.disconnect":
+                break
+            if message.get("bytes") is not None:
+                await stt_ws.send_realtime_audio_input(RealtimeAudioInput(
+                    audio=base64.b64encode(message["bytes"]).decode("utf-8"),
+                ))
+            elif message.get("text") is not None:
                 data = json.loads(message["text"])
-                if data.get("type") == "start_call":
-                    client_thread_id = data.get("thread_id")
-                    if isinstance(client_thread_id, str) and client_thread_id.strip():
-                        thread_id = client_thread_id
-                    if activity.started:
+                kind = data.get("type")
+                if kind in {"playback_started", "playback_done", "playback_paused", "playback_resumed"}:
+                    if not response or not owns(response) or data.get("response_id") != response.response_id:
                         continue
-                    activity.started = True
+                    if kind in {"playback_paused", "playback_resumed"} and data.get("utterance_id") != utterance_id:
+                        continue
+                    if kind == "playback_done":
+                        response.playback_complete = True
+                        activity.playback_active = False
+                        # An in-flight decision retains its pause state until resolution.
+                        if not activity.interruption_pending:
+                            activity.playback_paused = False
+                    elif kind == "playback_started":
+                        response.playback_complete = False
+                        activity.playback_active = True
+                    elif kind == "playback_paused":
+                        if activity.interruption_pending:
+                            activity.playback_paused = True
+                            response.playable.clear()
+                    elif not activity.interruption_pending and not activity.user_speaking:
+                        activity.playback_paused = False
+                        response.playable.set()
                     activity.touch()
-                    # Start TTS pipeline once the call begins
-                    tts_send_task = asyncio.create_task(handle_tts_send())
-                    tts_recv_task = asyncio.create_task(handle_tts_recv())
-                    inactivity_task = asyncio.create_task(handle_inactivity())
-                elif data.get("type") in {"playback_started", "playback_done"}:
-                    activity.playback_active = data["type"] == "playback_started"
-                    activity.touch()
-                elif data.get("type") == "tts":
-                    # Direct speech must never interrupt an active conversation.
+                elif kind == "tts":
                     text = data.get("text", "").strip()
-                    if text and tts_ws and activity.idle:
-                        activity.response_pending = True
-                        activity.touch()
-                        await agent_text_queue.put("RESET")
-                        await agent_text_queue.put(text)
-                        await agent_text_queue.put(None)
-                elif data.get("type") == "end_call":
+                    if text and activity.idle:
+                        await start_response(text, language.current)
+                elif kind == "end_call":
                     break
-
     except WebSocketDisconnect:
-        print("[Voice Pipeline] Client disconnected")
-    except Exception as e:
-        print(f"[Voice Pipeline Error] {e!r}")
-        traceback.print_exc()
+        pass
+    except Exception:
         try:
-            await websocket.send_json({
-                "type": "voice_error",
-                "message": "Could not connect to the voice service. Please try again.",
-            })
+            await emit("voice_error", message="Could not connect to the voice service. Please try again.")
         except Exception:
             pass
     finally:
-        # Cancel all tasks
-        tasks = list(filter(None, [stt_task, agent_task, tts_send_task, tts_recv_task, inactivity_task]))
-        for t in tasks:
-            t.cancel()
+        tasks = list(background_tasks | {
+            task for task in (stt_task, inactivity_task, decision_task, grace_task, watchdog_task) if task
+        })
+        for task in tasks:
+            task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        # Exit SDK-managed async connections.
-        for connection in (stt_connection, tts_connection):
-            if connection:
-                try:
-                    await connection.__aexit__(None, None, None)
-                except Exception:
-                    pass
+        if response:
+            await response.cancel()
+        if classifier:
+            try:
+                await asyncio.wait_for(classifier.aclose(), timeout=2)
+            except Exception:
+                pass
+        if stt_connection:
+            try:
+                await asyncio.wait_for(stt_connection.__aexit__(None, None, None), timeout=2)
+            except Exception:
+                pass
