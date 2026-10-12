@@ -158,3 +158,119 @@ On an acknowledgment, preserve all of that response's ownership and queued audio
 
 Make small atomic commits for each complete logical change.
 Keep a temporary feature flag off until the behavior has been validated.
+
+## Example acceptance matrix
+
+These are contextual examples, not a dictionary that replaces Jev.
+Every completed overlapping utterance in this matrix is sent to Jev.
+
+| Scout's situation | Caller input | Expected result |
+| --- | --- | --- |
+| Explaining hostel fees | "okay", "alright", "I'm listening" | Acknowledgment; same explanation continues. |
+| Explaining hostel fees | "हाँ, सुन रहा हूँ" | Acknowledgment if context clearly indicates listening. |
+| Explaining hostel fees | "ਹਾਂ, ਸੁਣ ਰਿਹਾ ਹਾਂ" | Acknowledgment if context clearly indicates listening. |
+| Explaining hostel fees | "no" | Take a turn; allow rejection or correction. |
+| Explaining hostel fees | "what?" | Take a turn; allow clarification. |
+| Explaining hostel fees | "stop", "wait", "रुको", "ਰੁਕੋ" | Take a turn; stop old speech. |
+| Explaining hostel fees | "okay, but does that include electricity?" | Take a turn; preserve the entire question. |
+| Explaining hostel fees | "haan, but scholarship ka kya?" | Take a turn; recognize the mixed-language question. |
+| Asking whether to compare CSE and ECE | "yes", "okay", "हाँ", "ਹਾਂ" | Take a turn; accept the answer to Scout's question. |
+| Asking whether to compare CSE and ECE | "no" | Take a turn; accept the refusal. |
+| Silent and listening | Any of the above | Normal caller turn; no overlap-only filter. |
+| Speaking when Jev times out or returns invalid output | Any nonempty input | Take a turn through the bounded fallback. |
+
+An acknowledgment is not a new question for the answer agent.
+A one-word interruption does not require inventing a detailed question.
+Use the existing conversation context for a short clarification or correction response, and allow the caller to continue.
+Merge adjacent transcript fragments belonging to the same pending utterance before submitting them as a new answer request.
+
+## Validation during implementation
+
+### Classifier and backend checks
+
+Add focused policy tests in `backend/test_voice_interruption.py` and extend `backend/test_voice_pipeline.py`.
+Use mocked Jev results for deterministic state and cancellation checks, then evaluate the same examples against live Jev separately.
+Mocked classifier output establishes application behavior, not live classification accuracy.
+
+Check the following:
+
+- Every nonempty overlapping final transcript, including "no" and "what", creates exactly one Jev decision.
+- Nonoverlapping input reaches the existing agent normally.
+- Acknowledgments keep the original response alive, do not change language, and create no new answer placeholder.
+- Taking a turn cancels unfinished generation and already-finished generation's remaining playback alike.
+- Old queued text, TTS audio, completion events, and asynchronous decode results cannot affect a successor response.
+- A delayed Jev result cannot resume speech over a newer caller utterance.
+- No-transcript speech events and empty transcripts resume the retained answer through the watchdog.
+- Timeouts, missing credentials, malformed answers, and provider failures use the bounded caller-turn fallback.
+- Pending classification never blocks the STT receive loop.
+- Paused playback and pending decisions suppress inactivity check-ins.
+- Call shutdown cancels decision timers and closes owned tasks and sockets even during a pause.
+- Separate calls cannot share decisions, queued audio, response counters, or caller input.
+
+Extend the existing activity tests for pending and paused states.
+Run the existing cancellation and language tests because those paths are directly affected.
+
+### Browser playback checks
+
+Use deterministic fake WebSocket events and controllable audio decoding for frontend lifecycle checks.
+Check that suspending playback preserves sample position and scheduled audio, and that resuming does not replay or skip segments.
+Check late decode completion, repeated pause/resume messages, malformed audio headers, and cancellation followed immediately by a new response.
+Confirm that the microphone remains active while the playback context is suspended.
+Confirm that ending and reopening a call does not leave a suspended context, timer, or old message handler affecting the new call.
+
+Review the call UI while testing it.
+Scout's speaking state, waiting state, transcript entries, and visual audio activity must match what the caller hears.
+An acknowledgment must not show a blank replacement answer or flicker into "thinking".
+
+### Real-call checks
+
+Exercise English, Hindi, Punjabi, and each additional supported language before claiming coverage for it.
+Include mixed-language input, quiet acknowledgments, rapid corrections, speaker playback, and headphone playback.
+Repeat short interruptions at the beginning, middle, and end of an answer, including after generation finishes but playback continues.
+Try "okay" followed immediately by a separate "but..." fragment to check utterance merging and stale decision handling.
+
+Verify that no canceled audio is audible after a new response begins.
+Verify that temporary pauses resume the same explanation without repetition or lost words.
+Do not report the feature as working from backend tests alone.
+
+## Timing and observability
+
+Trace the voice decision separately from retrieval and attach it to the current call's trace.
+Record utterance and response IDs, decision choice, fallback reason, request duration, model, returned probabilities/confidence, and cancellation outcome.
+Keep API credentials out of all events, browser state, and traces.
+Follow the existing project's handling of conversation text instead of adding duplicate raw transcript logs.
+
+Measure these separately:
+
+- Speech onset to temporary playback pause.
+- Speech end to final STT transcript.
+- Final transcript to Jev result or fallback.
+- Final transcript to permanent interruption or acknowledgment resume.
+- Accepted caller turn to the new response's first audio.
+- TTS session setup time and time spent retaining audio.
+
+Report p50 and p95 timings plus acknowledgment mistakes, missed interruptions, and fallback frequency by language.
+The overall delay includes STT endpointing and network time; the classifier deadline alone is not an end-to-end latency claim.
+Tune the grace period and decision timeout from these observations.
+If Jev cannot meet the turn-taking budget reliably, retain the reversible playback architecture and evaluate a faster classifier before enabling the feature broadly.
+
+## Enablement and completion criteria
+
+Add `VOICE_INTERRUPTION_ENABLED`, `VOICE_INTERRUPTION_GRACE_MS`, and `VOICE_INTERRUPTION_TIMEOUT_MS` configuration.
+Default the feature off until coordinated frontend/backend protocol changes and validation are complete.
+When disabled, preserve the existing interruption behavior while retaining response isolation that prevents stale audio.
+Pin a WebSocket protocol version during call setup so incompatible frontend/backend deployments fail clearly before playback begins.
+
+Enable the feature for controlled calls first, then expand after reviewing actual accuracy and timings.
+Disabling classification must still close pending decision tasks and prevent paused playback from becoming stuck.
+
+Completion requires:
+
+- All deterministic acceptance scenarios and lifecycle checks passing.
+- Live Jev evaluation covering short interruptions, contextual answers, and mixed-language input.
+- Real browser calls demonstrating acknowledgment continuation and genuine interruption handling.
+- No obsolete audio crossing response boundaries and no microphone loss during a temporary pause.
+- Measured timing and classification results documented with their language coverage and limitations.
+
+The current deliverable is this implementation plan only.
+No feature code, live classifier benchmark, or live-call validation has been performed for this plan.
