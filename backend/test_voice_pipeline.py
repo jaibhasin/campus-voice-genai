@@ -8,16 +8,17 @@ import unittest
 import wave
 from unittest.mock import AsyncMock, patch
 
-from backend import voice_pipeline as voice_pipeline_module
-from backend.voice_activity import CHECK_INS, VoiceActivity
-from backend.voice_interruption import InterruptionDecision
-from backend.voice_response import VoiceResponse
 from sarvamai.types.audio_output import AudioOutput
 from sarvamai.types.audio_output_data import AudioOutputData
 from sarvamai.types.event_response import EventResponse
 from sarvamai.types.event_response_data import EventResponseData
 from sarvamai.types.realtime_end import RealtimeEnd
 from sarvamai.types.realtime_error import RealtimeError
+
+from backend import voice_pipeline as voice_pipeline_module
+from backend.voice_activity import CHECK_INS, VoiceActivity
+from backend.voice_interruption import InterruptionDecision
+from backend.voice_response import VoiceResponse
 
 
 class FakeConnection:
