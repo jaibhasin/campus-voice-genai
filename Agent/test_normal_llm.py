@@ -1,0 +1,172 @@
+import asyncio
+import json
+import unittest
+from unittest.mock import Mock, patch
+
+from langchain_core.messages import AIMessageChunk, ToolMessage
+
+from Agent.normal_llm import NormalLLMAgent
+from Agent.test_batch_pageindex import batch_store, paths_for
+from Agent.test_graph import make_agent
+
+
+def query(paths, content=""):
+    return AIMessageChunk(content=content, tool_call_chunks=[{
+        "name": "read_pageindex", "args": json.dumps({"paths": paths}),
+        "id": "read-batch", "index": 0,
+    }])
+
+
+class ScriptedModel:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+        self.root_client = Mock()
+        self.root_async_client = Mock(close=unittest.mock.AsyncMock())
+
+    def bind_tools(self, tools, **options):
+        parent = self
+
+        class Binding:
+            def stream(self, messages, **kwargs):
+                parent.calls.append((list(messages), options))
+                chunks = parent.script.pop(0)
+                if isinstance(chunks, Exception):
+                    raise chunks
+                yield from chunks
+
+            async def astream(self, messages, **kwargs):
+                for chunk in self.stream(messages, **kwargs):
+                    await asyncio.sleep(0)
+                    yield chunk
+
+        return Binding()
+
+
+class NormalLLMTests(unittest.TestCase):
+    def setUp(self):
+        self.store = batch_store()
+        self.paths = paths_for(self.store)
+
+    def agent(self, script):
+        model = ScriptedModel(script)
+        return NormalLLMAgent(self.store, model=model), model
+
+    def test_greeting_uses_one_model_call_and_no_sources(self):
+        agent, model = self.agent([[AIMessageChunk(content="Hello, I'm Scout.")]])
+        events = []
+        with patch.object(agent.index, "read", side_effect=AssertionError("Greeting queried sources")):
+            reply, result = agent.run("Hello", [], emit=events.append)
+        self.assertEqual(reply.content, "Hello, I'm Scout.")
+        self.assertEqual(len(model.calls), 1)
+        self.assertFalse(result.evidence)
+        self.assertEqual(events, [{"type": "token", "content": reply.content}])
+
+    def test_three_paths_are_read_in_one_call_then_same_model_answers(self):
+        agent, model = self.agent([
+            [query(self.paths, "Let me check internal IDs.")],
+            [AIMessageChunk(content="According to the source, actual eligibility applies.")],
+        ])
+        events = []
+        reply, result = agent.run("Compare admission, hostel and scholarship eligibility", [], emit=events.append)
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(len(result.evidence), 6)
+        self.assertEqual(len(result.history), 1)
+        tool = next(m for m in model.calls[1][0] if isinstance(m, ToolMessage))
+        self.assertEqual(len(json.loads(tool.content)["sources"]), 6)
+        self.assertNotIn("internal IDs", "".join(e.get("content", "") for e in events))
+        self.assertEqual([e["content"] for e in events if e["type"] == "token"], [reply.content])
+
+    def test_followup_is_bounded_and_final_call_cannot_query(self):
+        first = [{**self.paths[0], "source_ids": self.paths[0]["source_ids"][:1]}]
+        second = [{**self.paths[0], "source_ids": self.paths[0]["source_ids"][1:]}]
+        agent, model = self.agent([[query(first)], [query(second)], [AIMessageChunk(content="Complete answer.")]])
+        events = []
+        _reply, result = agent.run("Eligibility and exceptions?", [], emit=events.append)
+        self.assertEqual(len(model.calls), 3)
+        self.assertEqual(len(result.evidence), 2)
+        self.assertEqual(model.calls[-1][1]["tool_choice"], "none")
+        self.assertEqual([e["content"] for e in events if e["type"] == "token"], ["Complete answer."])
+
+    def test_invalid_request_cannot_read_any_source(self):
+        agent, model = self.agent([
+            [query([{**self.paths[0], "source_ids": ["invented"]}])],
+            [AIMessageChunk(content="I cannot establish that from the available evidence.")],
+        ])
+        _reply, result = agent.run("Missing fact?", [])
+        self.assertEqual(len(model.calls), 2)
+        self.assertFalse(result.evidence)
+        self.assertIn("invalid", result.limitation)
+
+    def test_each_turn_can_read_same_sources_without_previous_evidence(self):
+        agent, model = self.agent([
+            [query(self.paths[:1])], [AIMessageChunk(content="First answer")],
+            [query(self.paths[:1])], [AIMessageChunk(content="Second answer")],
+        ])
+        agent.run("Question one", [])
+        _reply, result = agent.run("Question two", [{"role": "assistant", "text": "First answer"}])
+        self.assertEqual(len(result.evidence), 2)
+        self.assertFalse(any(isinstance(m, ToolMessage) for m in model.calls[2][0]))
+
+    def test_graph_routes_selected_provider_and_does_not_call_old_answer_model(self):
+        normal, model = self.agent([[query(self.paths[:2])], [AIMessageChunk(content="Luna answer.")]])
+        graph, decisions, old_model = make_agent([])
+        graph.normal_agent = normal
+        events = list(graph.stream("Hostels and scholarships?", config={"configurable": {
+            "thread_id": "normal", "retrieval_provider": "llm_batch",
+        }}))
+        self.assertEqual(len(model.calls), 2)
+        self.assertFalse(decisions.calls)
+        self.assertFalse(old_model.calls)
+        self.assertEqual(events[-1]["full_content"], "Luna answer.")
+
+    def test_provider_switch_retains_context(self):
+        graph, _decisions, old_model = make_agent([])
+        normal, model = self.agent([[AIMessageChunk(content="Hi from Luna")], [AIMessageChunk(content="Follow-up")]])
+        graph.normal_agent = normal
+        config = {"configurable": {"thread_id": "switch-normal", "retrieval_provider": "llm_batch"}}
+        graph.invoke("Hello", config=config)
+        graph.invoke("And fees?", config=config)
+        self.assertIn("Hi from Luna", str(model.calls[1][0]))
+        self.assertFalse(old_model.calls)
+
+
+class NormalLLMAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_voice_preserves_language_and_streams_only_reply(self):
+        store = batch_store()
+        model = ScriptedModel([[query(paths_for(store)[:2])], [AIMessageChunk(content="ਸਰੋਤ ਅਨੁਸਾਰ ਜਵਾਬ")]])
+        normal = NormalLLMAgent(store, model=model)
+        graph, _decisions, old_model = make_agent([])
+        graph.normal_agent = normal
+        graph.is_voice = True
+        events = [e async for e in graph.astream("Hostels?", config={"configurable": {
+            "thread_id": "voice-normal", "retrieval_provider": "llm_batch", "response_language": "pa-IN",
+        }})]
+        self.assertIn("Punjabi (pa-IN)", model.calls[0][0][0].content)
+        self.assertIn("voice call", model.calls[0][0][0].content)
+        self.assertFalse(old_model.calls)
+        self.assertEqual(events[-1]["full_content"], "ਸਰੋਤ ਅਨੁਸਾਰ ਜਵਾਬ")
+
+    async def test_deadline_and_cancellation_stop_pending_model(self):
+        class HangingModel(ScriptedModel):
+            def bind_tools(self, *_args, **_kwargs):
+                class Binding:
+                    async def astream(self, *_args, **_kwargs):
+                        await asyncio.Event().wait()
+                        yield AIMessageChunk(content="Must never speak")
+                return Binding()
+
+        normal = NormalLLMAgent(batch_store(), model=HangingModel([]))
+        normal.timeout = 0.02
+        with self.assertRaises(TimeoutError):
+            await normal.arun("Hello", [])
+        normal.timeout = 15
+        task = asyncio.create_task(normal.arun("Hello", []))
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+
+if __name__ == "__main__":
+    unittest.main()
