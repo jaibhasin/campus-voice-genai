@@ -1,6 +1,6 @@
 # Voice interruption classification plan
 
-Status: planned; feature implementation has not started.
+Status: implemented; controlled validation passed and enablement remains opt-in.
 Branch: `voice-interruption-classifier`.
 
 ## What the caller should experience
@@ -88,8 +88,9 @@ Missing credentials, timeout, invalid output, or request failure all resolve to 
 6. For an acknowledgment, resume retained playback if it was paused and keep the current agent/TTS response alive.
 7. For taking a turn or uncertainty, permanently discard the old playback, cancel its generation and synthesis, and submit the caller's utterance through the normal voice answering path.
 
-Start with a 350 ms playback grace period and a 1,000 ms total classifier deadline after the final transcript.
-These are initial tuning values, not measured service guarantees.
+Use a 350 ms playback grace period and a 4,000 ms total classifier deadline after the final transcript.
+The initial 1,000 ms deadline was revised after controlled integration calls took approximately 700-2,950 ms.
+These configurable budgets and the small timing sample are not service guarantees.
 If classification remains pending beyond the grace period, pause playback until a decision or its deadline arrives.
 This bounds how long Scout continues talking over a possible interruption, while preserving a way to resume.
 
@@ -272,5 +273,25 @@ Completion requires:
 - No obsolete audio crossing response boundaries and no microphone loss during a temporary pause.
 - Measured timing and classification results documented with their language coverage and limitations.
 
-The current deliverable is this implementation plan only.
-No feature code, live classifier benchmark, or live-call validation has been performed for this plan.
+## Implementation and validation record
+
+The classifier, response ownership, reversible playback, protocol, busy-state handling, and lifecycle protections are implemented.
+The setup instructions and optional feature flag are documented in `README.md` and `.env.example`.
+
+The Python verification suite passes 108 tests, including classifier decisions, timeouts, short answers, overlapping fragments, cancellation races, provider failures, and separate calls.
+The deterministic playback suite passes nine tests.
+The frontend production build passed.
+
+Native Chrome checks used its real Web Audio implementation and a synthetic microphone, with simulated server events.
+They confirmed that paused playback preserves its timeline, microphone frames continue during a pause, acknowledgments create no new answer, obsolete audio/text are ignored, and ending/reopening a call closes old contexts and tracks.
+
+A live Jev sample covered 13 English, Hindi, Punjabi, and mixed-language examples.
+An answer-policy guard prevents a listening classification from swallowing an answer when Scout has requested one.
+
+A controlled integration check used real Sarvam realtime STT, Sarvam streaming TTS, and Jev with synthetic caller speech and a scripted answer agent.
+"Okay" continued response 1, "no" created response 2, and "what" created response 3.
+This check exposed and verified the fix for punctuation-only synthesis fragments rejected by Sarvam.
+
+These checks establish the implementation and controlled behavior, including real provider integration.
+They do not establish all-language accuracy, performance percentiles, or live human microphone behavior across devices.
+Broader call evaluation remains part of opt-in rollout rather than a claim of completed coverage.
