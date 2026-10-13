@@ -89,7 +89,7 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
                     return
                 buffer += token
                 while buffer:
-                    boundary = re.search(r"[.!?।](?:\s|$)", buffer)
+                    boundary = re.search(r"[.!?।]\s", buffer)
                     cut = boundary.end() if boundary else 0
                     if not cut and len(buffer) >= 400:
                         cut = buffer.rfind(" ", 0, 400) + 1 or 400

@@ -271,6 +271,8 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
 
     async def decide_pending():
         nonlocal decision_task
+        if decision_task and not decision_task.done() and not decision_task.cancelling():
+            return
         owner = response
         text = " ".join(fragments)
         if not text:
@@ -311,6 +313,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
     async def handle_stt_events():
         nonlocal utterance_id, utterance_open, overlap_response_id
         nonlocal detected_language, detected_confidence
+        nonlocal decision_task
         try:
             async for event in stt_ws:
                 event_type = type(event).__name__
@@ -322,6 +325,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                     utterance_id += 1
                     utterance_open = True
                     stop_task(decision_task)
+                    decision_task = None
                     stop_timers()
                     activity.user_speaking = True
                     activity.awaiting_transcript = False

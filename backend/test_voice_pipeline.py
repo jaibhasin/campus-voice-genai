@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from backend import voice_pipeline as voice_pipeline_module
 from backend.voice_activity import CHECK_INS, VoiceActivity
 from backend.voice_interruption import InterruptionDecision
-from backend.voice_response import VoiceResponse, synthesize_response
+from backend.voice_response import VoiceResponse
 from sarvamai.types.audio_output import AudioOutput
 from sarvamai.types.audio_output_data import AudioOutputData
 from sarvamai.types.event_response import EventResponse
@@ -903,6 +903,49 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(activity.response_pending)
             self.assertFalse(activity.playback_active)
             self.assertTrue(self.client.text_to_speech_streaming.connections[0].closed)
+
+
+    async def test_empty_final_does_not_duplicate_pending_classification(self):
+        requested = asyncio.Event()
+        release = asyncio.Event()
+        async def classify(*args, **kwargs):
+            requested.set()
+            await release.wait()
+            return InterruptionDecision("acknowledgment", None, 1)
+        self.classifier.classify.side_effect = classify
+        await self.start()
+        await self.utterance("okay")
+        await asyncio.wait_for(requested.wait(), 1)
+        await self.stt.event("RealtimeTranscriptFinal", "")
+        await self.stt.event("RealtimeTranscriptPartial", "still listening")
+        await self.browser.event("partial_transcript")
+        self.assertEqual(self.classifier.classify.await_count, 1)
+        release.set()
+        await self.browser.event("acknowledgment", 1)
+
+    async def test_separate_calls_own_response_counters_sockets_and_input(self):
+        second_stt = QueueStt()
+        second_browser = RecordingBrowser()
+        second_agent = RecordingAgent()
+        sockets = iter([self.stt, second_stt])
+        self.client.speech_to_text_realtime_streaming = OwnedStreamingService(lambda: next(sockets))
+        await self.start()
+        await second_browser.command("start_call", protocol_version=2, thread_id="second-call")
+        second_task = asyncio.create_task(voice_pipeline_module.voice_pipeline(second_browser, second_agent))
+        try:
+            await second_browser.event("voice_ready")
+            await second_stt.event("RealtimeTranscriptFinal", "Admissions?")
+            await second_browser.event("tts_done", 1)
+            self.classifier.classify.return_value = InterruptionDecision("take_turn", None, 1)
+            await self.utterance("no")
+            await self.browser.event("tts_done", 2)
+            self.assertEqual([message["response_id"] for message in second_browser.sent_json if message["type"] == "response_started"], [1])
+            self.assertEqual([call[0] for call in second_agent.calls], ["Admissions?"])
+            self.assertEqual(second_agent.calls[0][1]["config"]["configurable"]["thread_id"], "second-call")
+            self.assertEqual(struct.unpack(">BI", second_browser.sent_audio[0][:5]), (2, 1))
+        finally:
+            await second_browser.command("end_call")
+            await asyncio.wait_for(second_task, 1)
 
 
 if __name__ == "__main__":
