@@ -67,6 +67,27 @@ class BatchPageIndexTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "catalog limit"):
             BatchPageIndex(self.store, catalog_limit=1)
 
+    def test_selects_deep_sources_under_intermediate_branches(self):
+        store = DocumentStore({"nested": {"tree": {"result": [{
+            "title": "Policies", "nodes": [
+                {"title": section, "nodes": [{"title": "Rules", "nodes": [
+                    {"title": "Conditions", "text": section + " source text"},
+                ]}]}
+                for section in ("Hostels", "Scholarships", "Admissions")
+            ],
+        }]}}})
+        index = BatchPageIndex(store)
+        paths = []
+        for name in ("Hostels", "Scholarships", "Admissions"):
+            branch = next(t for t in store.targets.values() if t.kind == "outline" and t.title.endswith(" / " + name))
+            source = next(t for t in store.targets.values() if t.kind == "source" and name in t.title)
+            self.assertGreater(len(index.ancestors[source.id]), 2)
+            paths.append({"branch_id": branch.id, "source_ids": [source.id]})
+        result = index.read(paths, set(), 32000)
+        self.assertEqual(len(result.evidence), 3)
+        with self.assertRaises(ValueError):
+            index.read([{**paths[0], "source_ids": paths[1]["source_ids"]}], set(), 32000)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,32 @@ class NormalLLMTests(unittest.TestCase):
 
 
 class NormalLLMAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_turns_do_not_share_reads_or_evidence(self):
+        store = batch_store()
+        selection = paths_for(store)[:1]
+
+        class ConcurrentModel(ScriptedModel):
+            def bind_tools(self, *_args, **_kwargs):
+                class Binding:
+                    async def astream(self, messages, **kwargs):
+                        await asyncio.sleep(0)
+                        if not isinstance(messages[-1], ToolMessage):
+                            yield query(selection)
+                        else:
+                            question = next(m.content for m in messages if m.content in {"First question", "Second question"})
+                            yield AIMessageChunk(content=question)
+                return Binding()
+
+        normal = NormalLLMAgent(store, model=ConcurrentModel([]))
+        first, second = await asyncio.gather(
+            normal.arun("First question", []), normal.arun("Second question", []),
+        )
+        self.assertEqual(first[0].content, "First question")
+        self.assertEqual(second[0].content, "Second question")
+        self.assertEqual(len(first[1].evidence), 2)
+        self.assertEqual(len(second[1].evidence), 2)
+        self.assertIsNot(first[1].evidence, second[1].evidence)
+
     async def test_async_voice_preserves_language_and_streams_only_reply(self):
         store = batch_store()
         model = ScriptedModel([[query(paths_for(store)[:2])], [AIMessageChunk(content="ਸਰੋਤ ਅਨੁਸਾਰ ਜਵਾਬ")]])
