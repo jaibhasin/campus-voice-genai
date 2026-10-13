@@ -33,7 +33,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
     await websocket.accept()
     enabled = os.getenv("VOICE_INTERRUPTION_ENABLED", "false").lower() in {"true", "1", "yes"}
     grace = configured_ms("VOICE_INTERRUPTION_GRACE_MS", 350, minimum=0, maximum=2000)
-    timeout = configured_ms("VOICE_INTERRUPTION_TIMEOUT_MS", 1000, maximum=5000)
+    timeout = configured_ms("VOICE_INTERRUPTION_TIMEOUT_MS", 4000, maximum=5000)
     transcript_timeout = configured_ms("VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS", 1500, maximum=5000)
     classifier = None
     stt_connection = None

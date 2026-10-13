@@ -91,7 +91,7 @@ def _trace_decision(result):
 
 
 class VoiceInterruptionClassifier:
-    def __init__(self, client=None, timeout=1.0):
+    def __init__(self, client=None, timeout=4.0):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         self.client = client if client is not None else JevClient(purpose="voice_interruption")

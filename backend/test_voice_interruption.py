@@ -70,7 +70,7 @@ class VoiceInterruptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["last_user_text"], context["last_user_text"])
         self.assertEqual((state["overlap"], state["response_id"], state["utterance_id"]), (True, 4, 8))
         self.assertEqual(questions, {"action": ACTION_QUESTION})
-        self.assertEqual(timeout, 1.0)
+        self.assertEqual(timeout, 4.0)
         self.assertEqual(decision.choice, "take_turn")
         self.assertEqual(decision.confidence, 0.72)
         self.assertEqual(decision.probabilities, {"take_turn": 0.72})

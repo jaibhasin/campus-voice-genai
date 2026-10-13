@@ -47,7 +47,7 @@ Playback continues for a configurable grace period before temporarily pausing wh
 An acknowledgment resumes the retained audio without restarting the answer, and microphone capture continues during a pause.
 Canceled responses cannot send their remaining audio into a new response.
 
-`VOICE_INTERRUPTION_GRACE_MS` defaults to 350 and `VOICE_INTERRUPTION_TIMEOUT_MS` defaults to 1000.
+`VOICE_INTERRUPTION_GRACE_MS` defaults to 350 and `VOICE_INTERRUPTION_TIMEOUT_MS` defaults to 4000.
 `VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS` defaults to 1500 and recovers when speech ends without a transcript.
 The feature defaults off for controlled enablement.
 Deploy the frontend and backend together because voice calls require protocol version 2.
