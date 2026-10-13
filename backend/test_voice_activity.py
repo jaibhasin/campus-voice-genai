@@ -7,7 +7,7 @@ from backend.voice_activity import CHECK_INS, VoiceActivity
 
 class VoiceActivityTests(unittest.IsolatedAsyncioTestCase):
     async def test_busy_states_wait_for_a_full_idle_period_after_completion(self):
-        for flag in ("user_speaking", "awaiting_transcript", "answering", "response_pending", "playback_active"):
+        for flag in ("user_speaking", "awaiting_transcript", "answering", "response_pending", "playback_active", "playback_paused", "interruption_pending"):
             with self.subTest(flag=flag):
                 activity = VoiceActivity(started=True)
                 setattr(activity, flag, True)

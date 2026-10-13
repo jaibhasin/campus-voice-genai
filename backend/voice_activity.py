@@ -19,6 +19,8 @@ class VoiceActivity:
     answering: bool = False
     response_pending: bool = False
     playback_active: bool = False
+    playback_paused: bool = False
+    interruption_pending: bool = False
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
@@ -26,6 +28,7 @@ class VoiceActivity:
         return self.started and not (
             self.user_speaking or self.awaiting_transcript or self.answering
             or self.response_pending or self.playback_active
+            or self.playback_paused or self.interruption_pending
         )
 
     def touch(self):

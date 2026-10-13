@@ -31,7 +31,10 @@ def _trace_outputs(response):
     return outputs
 
 
-def _trace_model(model, provider):
+def _trace_model(model, provider, purpose="retrieval"):
     run = get_current_run_tree()
     if run is not None:
-        run.metadata.update({"ls_provider": provider, "ls_model_name": model})
+        if purpose != "retrieval":
+            run.name = f"jev_{purpose}"
+        run.tags = list(dict.fromkeys([*(run.tags or []), purpose]))
+        run.metadata.update({"ls_provider": provider, "ls_model_name": model, "purpose": purpose})
