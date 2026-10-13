@@ -12,6 +12,11 @@ from sarvamai.types.audio_output import AudioOutput
 PROTOCOL_VERSION = 2
 
 
+def _has_alphanumeric_text(text: str) -> bool:
+    """Return whether a text chunk contains speakable letters or numbers."""
+    return any(character.isalnum() for character in text)
+
+
 def pcm16_to_wav(pcm_audio: bytes, sample_rate: int = 22050) -> bytes:
     """Wrap mono PCM16 bytes as a complete WAV file for browser decoding."""
     size = len(pcm_audio)
@@ -81,7 +86,7 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
             while not response.cancelled:
                 token = await response.text_queue.get()
                 if token is None:
-                    if buffer.strip():
+                    if _has_alphanumeric_text(buffer):
                         await convert(buffer.strip())
                     await response.playable.wait()
                     if not response.cancelled:
@@ -96,7 +101,7 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
                     if not cut:
                         break
                     sentence, buffer = buffer[:cut].strip(), buffer[cut:]
-                    if sentence:
+                    if _has_alphanumeric_text(sentence):
                         await convert(sentence)
 
         async def receiver():
