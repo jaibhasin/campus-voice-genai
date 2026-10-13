@@ -321,7 +321,7 @@ class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
         await browser.incoming.put({"text": json.dumps({"type": "start_call", "protocol_version": 2})})
         await browser.incoming.put({"text": json.dumps({"type": "end_call"})})
 
-        with patch.object(voice_pipeline_module, "sarvam_client", client), patch.object(
+        with patch.dict(os.environ, {"VOICE_INTERRUPTION_ENABLED": "false", "VOICE_INTERRUPTION_GRACE_MS": "350"}), patch.object(voice_pipeline_module, "sarvam_client", client), patch.object(
             voice_pipeline_module.socket,
             "getaddrinfo",
             return_value=[],
