@@ -16,6 +16,8 @@ from sarvamai.types.audio_output import AudioOutput
 from sarvamai.types.audio_output_data import AudioOutputData
 from sarvamai.types.event_response import EventResponse
 from sarvamai.types.event_response_data import EventResponseData
+from sarvamai.types.realtime_end import RealtimeEnd
+from sarvamai.types.realtime_error import RealtimeError
 
 
 class FakeConnection:
@@ -459,6 +461,7 @@ class QueueStt(FakeSttSocket):
         super().__init__()
         self.events = asyncio.Queue()
         self.send_realtime_audio_input = AsyncMock()
+        self.send_realtime_end = AsyncMock()
 
     async def __aiter__(self):
         while True:
@@ -637,6 +640,48 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
         await self.browser.event("tts_done", 1)
         self.classifier.classify.assert_not_awaited()
         self.assertEqual(self.agent.calls[0][0], "no")
+
+    async def test_fatal_stt_error_surfaces_safe_message_and_stops_listener(self):
+        await self.start(initial=False)
+        await self.stt.events.put(RealtimeError(
+            code="invalid_config", is_fatal=True,
+            message="secret provider detail and credential",
+        ))
+        await self.browser.event("voice_error")
+        await self.stt.event("RealtimeTranscriptFinal", "this must not be accepted")
+        await self.browser.command("end_call")
+        await asyncio.wait_for(self.task, 1)
+
+        errors = [event for event in self.browser.sent_json if event["type"] == "voice_error"]
+        self.assertEqual(errors, [{
+            "type": "voice_error",
+            "message": "Speech recognition failed. Please reconnect.",
+        }])
+        self.assertNotIn("secret provider detail", str(self.browser.sent_json))
+        self.assertEqual(self.agent.calls, [])
+        self.assertNotIn("transcript", [event["type"] for event in self.browser.sent_json])
+        self.stt.send_realtime_end.assert_awaited_once_with(RealtimeEnd())
+        self.assertTrue(self.client.speech_to_text_realtime_streaming.connections[0].closed)
+
+    async def test_nonfatal_stt_error_keeps_session_available_for_transcripts(self):
+        await self.start(initial=False)
+        await self.stt.events.put(RealtimeError(
+            code="invalid_config", is_fatal=False, message="configuration was retained",
+        ))
+        await self.stt.event("RealtimeTranscriptFinal", "What are the fees?")
+        await self.browser.event("tts_done", 1)
+
+        self.assertEqual([call[0] for call in self.agent.calls], ["What are the fees?"])
+        self.assertFalse(any(event["type"] == "voice_error" for event in self.browser.sent_json))
+
+    async def test_shutdown_closes_connection_even_if_realtime_end_fails(self):
+        self.stt.send_realtime_end.side_effect = OSError("socket already closed")
+        await self.start(initial=False)
+        await self.browser.command("end_call")
+        await asyncio.wait_for(self.task, 1)
+
+        self.stt.send_realtime_end.assert_awaited_once_with(RealtimeEnd())
+        self.assertTrue(self.client.speech_to_text_realtime_streaming.connections[0].closed)
 
     async def test_thinking_input_supersedes_without_classifier(self):
         thinking = asyncio.Event()

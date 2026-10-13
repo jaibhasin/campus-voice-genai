@@ -10,6 +10,7 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sarvamai import AsyncSarvamAI
 from sarvamai.types.realtime_audio_input import RealtimeAudioInput
+from sarvamai.types.realtime_end import RealtimeEnd
 
 from backend.voice_activity import CHECK_INS, VoiceActivity
 from backend.voice_interruption import VoiceInterruptionClassifier
@@ -375,6 +376,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                 elif event_type == "RealtimeSessionEnd":
                     await emit("voice_error", message="Speech recognition ended. Please reconnect.")
                     return
+                elif event_type == "RealtimeError" and getattr(event, "is_fatal", False):
+                    await emit("voice_error", message="Speech recognition failed. Please reconnect.")
+                    return
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -493,6 +497,20 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
                 await asyncio.wait_for(classifier.aclose(), timeout=2)
             except Exception:
                 pass
+        if stt_ws:
+            send_end = getattr(stt_ws, "send_realtime_end", None)
+            transport = getattr(stt_ws, "_websocket", stt_ws)
+            state = getattr(transport, "state", None)
+            closed = getattr(transport, "closed", None)
+            socket_open = (
+                getattr(state, "name", None) == "OPEN" if state is not None
+                else closed is not True
+            )
+            if callable(send_end) and socket_open:
+                try:
+                    await asyncio.wait_for(send_end(RealtimeEnd()), timeout=1)
+                except Exception:
+                    pass
         if stt_connection:
             try:
                 await asyncio.wait_for(stt_connection.__aexit__(None, None, None), timeout=2)
