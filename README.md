@@ -36,6 +36,22 @@ Voice answers and speech use the accepted conversation language; the agent prese
 Copy `.env.example` to `.env` in the project root and fill in your keys.
 The backend uses `TYPESAFE_API_KEY` for Jev retrieval, `OPENROUTER_API_KEY` for final answers, and `SARVAM_API_KEY` for voice features.
 
+## Voice interruptions
+
+Set `VOICE_INTERRUPTION_ENABLED=true` in `.env` to classify speech that overlaps Scout's playback with Jev.
+Scout continues the same answer for clear listening acknowledgments and gives the caller a turn for questions, corrections, confusion, or answers to Scout's questions.
+Short inputs such as "no" and "what" are sent to Jev with conversation context.
+Uncertain decisions and provider failures give the caller the floor.
+
+Playback continues for a configurable grace period before temporarily pausing while speech or classification remains pending.
+An acknowledgment resumes the retained audio without restarting the answer, and microphone capture continues during a pause.
+Canceled responses cannot send their remaining audio into a new response.
+
+`VOICE_INTERRUPTION_GRACE_MS` defaults to 350 and `VOICE_INTERRUPTION_TIMEOUT_MS` defaults to 1000.
+`VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS` defaults to 1500 and recovers when speech ends without a transcript.
+The feature defaults off for controlled enablement.
+Deploy the frontend and backend together because voice calls require protocol version 2.
+
 ## Jev retrieval
 
 Jev navigates local PageIndex documents and selects source text; the answer LLM responds using that evidence.
@@ -60,7 +76,13 @@ Traces are grouped by `thread_id` and flushed at shutdown; they show observable 
 Run the unit suite with:
 
 ```bash
-uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_language backend.test_voice_activity backend.test_voice_pipeline backend.test_agent_endpoints -v
+uv run python -m unittest Agent.test_documents Agent.test_retrieval Agent.test_graph Agent.test_tracing backend.test_voice_language backend.test_voice_activity backend.test_voice_pipeline backend.test_voice_interruption backend.test_voice_response backend.test_agent_endpoints -v
+```
+
+Run deterministic browser playback lifecycle tests with:
+
+```bash
+node --test frontend/src/lib/voicePlayback.test.mjs
 ```
 
 Tests mock model providers and API calls; use configured API keys to separately evaluate live answer quality, latency, and cost on representative questions.
