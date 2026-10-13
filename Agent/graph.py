@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from dataclasses import asdict
 from typing import Annotated
 
@@ -23,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from .languages import VOICE_LANGUAGES
 from .models import OpenRouterChatOpenAI as ChatOpenAI
+from .normal_llm import NormalLLMAgent
 from .prompts.prompts import (
     college_answer_system_prompt,
     college_assistant_system_prompt,
@@ -94,8 +96,11 @@ class Agent:
             else int(os.getenv("ANSWER_RESPONSE_RESERVE_TOKENS", "1500"))
         )
         self.retrieval_mode = retrieval_mode or os.getenv("RETRIEVAL_MODE", "decisions")
-        if self.retrieval_mode not in {"decisions", "jev", "llm"}:
-            raise ValueError("RETRIEVAL_MODE must be 'decisions', 'jev', or 'llm'")
+        if self.retrieval_mode not in {"decisions", "jev", "llm", "llm_batch"}:
+            raise ValueError("RETRIEVAL_MODE must be 'decisions', 'jev', 'llm', or 'llm_batch'")
+        self.is_voice = system_prompt == voice_assistant_system_prompt
+        self.normal_agent = None
+        self._normal_lock = threading.Lock()
         if system_prompt is None:
             self.system_prompt = (
                 college_answer_system_prompt
@@ -112,12 +117,13 @@ class Agent:
         self.retriever = (
             retriever
             if retriever is not None
-            else (Retriever(provider=self.retrieval_mode) if self.retrieval_mode != "llm" else None)
+            else (Retriever(provider=self.retrieval_mode if self.retrieval_mode != "llm_batch" else "decisions") if self.retrieval_mode != "llm" else None)
         )
         self.retrievers = {}
         if self.retriever is not None:
-            self.retrievers[self.retrieval_mode] = self.retriever
-            other = "jev" if self.retrieval_mode == "decisions" else "decisions"
+            typed_provider = "decisions" if self.retrieval_mode == "llm_batch" else self.retrieval_mode
+            self.retrievers[typed_provider] = self.retriever
+            other = "jev" if typed_provider == "decisions" else "decisions"
             self.retrievers[other] = Retriever(
                 store=self.retriever.store, limits=self.retriever.limits, provider=other
             )
@@ -463,11 +469,31 @@ class Agent:
         )
 
     def build_graph(self):
-        def update_summary(state):
+        def update_summary(state, config):
+            if self._provider(config) == "llm_batch":
+                return {}
             return self._summary_update(state)
 
-        async def aupdate_summary(state):
+        async def aupdate_summary(state, config):
+            if self._provider(config) == "llm_batch":
+                return {}
             return await self._asummary_update(state)
+
+        def normal(state, config):
+            question, conversation = self._retrieval_input(state, state.conversation_summary, state.summary_cursor)
+            message, retrieval = self._normal_agent().run(
+                question, conversation, language=config.get("configurable", {}).get("response_language"),
+                voice=self.is_voice, emit=get_stream_writer(),
+            )
+            return {"messages": [message], "retrieval": asdict(retrieval)}
+
+        async def anormal(state, config):
+            question, conversation = self._retrieval_input(state, state.conversation_summary, state.summary_cursor)
+            message, retrieval = await self._normal_agent().arun(
+                question, conversation, language=config.get("configurable", {}).get("response_language"),
+                voice=self.is_voice, emit=get_stream_writer(),
+            )
+            return {"messages": [message], "retrieval": asdict(retrieval)}
 
         def retrieve(state, config):
             question, conversation = self._retrieval_input(
@@ -515,10 +541,16 @@ class Agent:
             RunnableLambda(update_summary, afunc=aupdate_summary),
         )
         workflow.add_node("answer", RunnableLambda(answer, afunc=aanswer))
+        workflow.add_node("normal_llm", RunnableLambda(normal, afunc=anormal))
+        workflow.add_edge("normal_llm", END)
         if self.retrieval_mode != "llm":
             workflow.add_node("retrieve", RunnableLambda(retrieve, afunc=aretrieve))
             workflow.add_edge(START, "conversation_memory")
-            workflow.add_edge("conversation_memory", "retrieve")
+            workflow.add_conditional_edges(
+                "conversation_memory",
+                lambda state, config: "normal_llm" if self._provider(config) == "llm_batch" else "retrieve",
+                ["normal_llm", "retrieve"],
+            )
             workflow.add_edge("retrieve", "answer")
             workflow.add_edge("answer", END)
         else:
@@ -534,12 +566,22 @@ class Agent:
         return workflow.compile(checkpointer=MemorySaver())
 
     def _retriever_for(self, config):
-        provider = (config or {}).get("configurable", {}).get(
-            "retrieval_provider", self.retrieval_mode
-        )
+        provider = self._provider(config)
         if provider not in self.retrievers:
             raise ValueError("Unknown retrieval provider")
         return self.retrievers[provider]
+
+    def _provider(self, config):
+        return (config or {}).get("configurable", {}).get("retrieval_provider", self.retrieval_mode)
+
+    def _normal_agent(self):
+        with self._normal_lock:
+            if self.normal_agent is None:
+                from .documents import DocumentStore
+
+                store = self.retriever.store if self.retriever is not None else DocumentStore.load()
+                self.normal_agent = NormalLLMAgent(store, response_tokens=self.answer_response_reserve_tokens)
+            return self.normal_agent
 
     def _model_config(self):
         return {
@@ -626,6 +668,8 @@ class Agent:
     async def aclose(self):
         for retriever in self.retrievers.values():
             await retriever.client.aclose()
+        if self.normal_agent is not None:
+            await self.normal_agent.aclose()
 
     def inspect_graph(self):
         import tempfile

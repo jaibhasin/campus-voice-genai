@@ -108,7 +108,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    retrieval_provider: Literal["decisions", "jev"] = "decisions"
+    retrieval_provider: Literal["decisions", "jev", "llm_batch"] = "decisions"
 
 
 class TTSRequest(BaseModel):
@@ -145,8 +145,8 @@ async def chat(req: ChatRequest):
     Stream agent response as Server-Sent Events (SSE).
 
     The frontend sends a user message + thread_id.
-    The agent retrieves local evidence through the selected decision provider, then streams
-    the OpenRouter answer through LangGraph:
+    The selected provider either retrieves evidence before answering or uses Luna
+    to choose between a direct reply and batch PageIndex reads.
 
     Event types:
         - token:     { "type": "token",     "content": "..." }
@@ -313,7 +313,7 @@ async def text_to_speech(req: TTSRequest):
 @app.websocket("/api/voice/ws")
 async def voice_websocket_endpoint(
     websocket: WebSocket,
-    retrieval_provider: Literal["decisions", "jev"] = "decisions",
+    retrieval_provider: Literal["decisions", "jev", "llm_batch"] = "decisions",
 ):
     from backend.voice_pipeline import voice_pipeline
     await voice_pipeline(websocket, voice_agent_instance, retrieval_provider)

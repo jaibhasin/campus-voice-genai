@@ -22,9 +22,9 @@ def events(response):
 
 
 class AgentEndpointTests(unittest.TestCase):
-    def test_chat_and_voice_default_to_decisions_and_allow_jev(self):
+    def test_chat_and_voice_default_to_decisions_and_allow_all_providers(self):
         for endpoint in ("/api/chat", "/api/chat/voice"):
-            for provider in (None, "decisions", "jev"):
+            for provider in (None, "decisions", "jev", "llm_batch"):
                 with self.subTest(endpoint=endpoint, provider=provider):
                     agent = Mock()
                     agent.stream.return_value = iter([{"type": "done"}])
@@ -50,7 +50,7 @@ class AgentEndpointTests(unittest.TestCase):
         agent.stream.assert_not_called()
 
     def test_voice_socket_passes_provider_before_connecting_to_speech_services(self):
-        for query, provider in (("", "decisions"), ("?retrieval_provider=jev", "jev")):
+        for query, provider in (("", "decisions"), ("?retrieval_provider=jev", "jev"), ("?retrieval_provider=llm_batch", "llm_batch")):
             with self.subTest(provider=provider):
                 async def pipeline(socket, agent, selected, expected=provider):
                     self.assertEqual(selected, expected)
