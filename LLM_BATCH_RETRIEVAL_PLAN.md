@@ -1,185 +1,96 @@
-# GPT-6 Luna batch retrieval plan
+# GPT-6 Luna PageIndex agent
 
-Status: proposed, implementation not started.
+Status: implemented with focused local verification.
 
-Add `Normal LLM (GPT-6 Luna)` to the existing retrieval dropdown for chat and voice.
-One Luna request should inspect a compact catalog spanning multiple levels of the document tree and select source nodes from up to three relevant paths together.
-The server then fetches those sources locally and passes actual source text to the existing answer model.
-Fewer retrieval round trips are the intended improvement; latency and answer quality must be measured before claiming a speedup.
+The `Normal LLM (GPT-6 Luna)` dropdown option uses one GPT-6 Luna agent for both conversation and PageIndex source selection.
+For a greeting or clarification, Luna can respond directly.
+For a factual college question, Luna selects multiple source nodes across up to three branches in one tool call, receives their actual text, and answers using the same model.
+One model can require multiple API calls because source text becomes available only after a tool executes.
 
-## Current behavior and motivation
+## Request flow
 
-The dropdown offers `Decisions` and `Jev`.
-Both use a retrieval controller that selects one navigation action or source per request.
-The original `RETRIEVAL_MODE=llm` instead uses a tool-selection loop and is not the proposed batch retriever.
+1. Read the current question, bounded conversation context, and cached document catalog.
+2. Luna either writes a direct reply or calls `read_pageindex` with up to three branch IDs and six distinct source IDs.
+3. Validate the entire selection, then fetch source text locally without intermediate navigation calls.
+4. Luna reads the returned evidence and writes the reply, or requests one more batch for missing evidence.
+5. After two batches, the final Luna call has tools disabled and must explain any unresolved evidence gaps.
 
-The current corpus contains 23 document roots, 555 total targets, and 446 source chunks.
-A simple grouped catalog containing source references, titles, short summaries, and chunk counts is approximately 71 KB before further hierarchy compression.
-Catalog construction is local work and does not require another model call.
+The typical factual flow uses two calls to Luna.
+The optional follow-up makes it three calls to the same model.
+There is no separate planner or GPT-4.1-mini answer call in this mode.
+The existing Decisions and Jev options retain their original behavior.
 
-Today's completed Decision API hostel and scholarship turns spent 5.85 and 6.58 seconds in retrieval across four and six sequential decisions.
-Answer generation added 5.48 and 5.23 seconds respectively.
-The scholarship turn selected a large subsection and stopped at the evidence limit before reading its third chunk.
-These observations motivate fewer navigation calls and deliberate evidence allocation across requested topics.
-They are individual observations, not a comparative benchmark.
+## Catalog and branch traversal
 
-## Dropdown and request routing
+`Agent/batch_pageindex.py` builds a compact hierarchical catalog directly from the shared `DocumentStore`.
+The current corpus has 23 document roots and 446 source chunks.
+Catalog entries expose IDs at every depth, so the model can select a descendant source directly rather than opening each ancestor in a separate request.
+Section summaries and original-page hints assist navigation but are never treated as factual evidence.
+Original pages remain available for tables, footnotes, and gaps in section text.
 
-Keep the existing provider options and add the new option with request value `llm_batch`.
-Use the label `Normal LLM (GPT-6 Luna)` and retain `Retrieval provider` as the accessible label.
-The selected value applies to both chat requests and the next voice call.
-Keep selection disabled while a chat response streams or a call is open, matching the current interaction.
-Retain the current default during evaluation so users explicitly choose the new option.
+Any outline ancestor can identify a selected branch.
+The reader checks every source's ancestry and requires that each reference names an unread source target.
+Unknown IDs, outline IDs passed as sources, cross-branch references, duplicates, and oversized selections fail validation before any source is read.
+The selection can span multiple sections of one document or branches in different documents.
+Per-turn evidence, seen-source IDs, history, and tool messages remain local to each request.
 
-Extend chat and voice endpoint validation to accept `llm_batch`.
-Replace the graph's two-provider initialization assumption with an explicit registry containing `decisions`, `jev`, and `llm_batch`.
-Each provider receives the shared immutable document store and maintains request-local retrieval state.
-Support `RETRIEVAL_MODE=llm_batch` for standalone agents without repurposing the existing `llm` mode.
-Selecting this option changes retrieval only; GPT-4.1-mini remains the answer model for the initial comparison.
-Jev continues to classify overlapping voice utterances under the existing interruption setting.
+Evidence allocation visits the first requested source in each branch before taking a second source from one branch.
+Retain whole source chunks and preserve returned provenance.
+Report selected chunks that do not fit as omitted, rather than silently clipping their text or claiming they were checked.
+The next batch cannot reread sources already fetched in the current turn.
 
-## Model and transport
+## Model and speech behavior
 
-Use the normal GPT-6 Luna model, not the Decisions variant.
-The official model supports structured outputs and reasoning effort `none`.
-See the [GPT-6 Luna model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna).
+`Agent/normal_llm.py` uses `openai/gpt-6-luna` through the existing OpenRouter credentials.
+Reasoning effort is `none`, consistent with normal Luna function calling in [OpenAI's model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna).
+The live gateway capability probe returned a valid tool call for this exact model.
 
-Prefer the existing OpenRouter connection and credentials, with `openai/gpt-6-luna` as the proposed gateway model ID.
-Before implementation is considered complete, verify the gateway model ID, structured-output support, reasoning parameter, and usage reporting with a live request.
-OpenAI documentation establishes the underlying model capabilities; it does not establish the gateway's availability or parameter mapping.
-Configure reasoning effort `none` initially and request a compact structured selection rather than explanatory prose.
-Use an asynchronous pooled client with an explicit total deadline and no hidden retries.
-Close the client during the existing application shutdown lifecycle.
+The same pooled model client handles source selection and final text.
+There are no hidden retries or calls to the existing answer model in this mode.
+Greetings, short utterances, clarifications, and factual routing are contextual model decisions rather than local keyword filters.
+Accepted voice language and concise spoken style apply to every call.
 
-## One request selects several paths
+Buffer text from tool-capable responses until the complete response establishes whether it is a query or a reply.
+Discard any preamble accompanying a tool call and never send tool arguments to chat or TTS.
+The final call with tools disabled can stream text directly.
+This buffering is deliberate and its effect on first spoken response latency must be included in live measurements.
 
-Build a stable catalog when the document store loads.
-Present document and section ancestry together with directly selectable source IDs, short summaries, page references, and chunk relationships.
-Represent artificial grouping outlines as catalog structure rather than requiring the model to select them one at a time.
-Keep original-page references available for tables, footnotes, and gaps in section text.
-Deduplicate repeated titles and preserve every source's document and section ancestry.
+## Graph and dropdown integration
 
-The request contains the current question, bounded recent conversation and running memory, the catalog, and any evidence from a previous batch.
-Use the existing follow-up context handling so questions such as "Does that include electricity?" resolve against the conversation.
-Treat catalog summaries and conversation as navigation data, not verified college facts.
+`Agent/graph.py` routes the selected `llm_batch` provider to a dedicated graph node while preserving existing thread history.
+This node emits the same token, source-progress, and completion events used by chat and voice.
+It skips the separate conversation summarizer and uses bounded recent context plus any existing summary.
+Switching providers keeps the conversation but resets retrieved evidence on the next question.
 
-The structured result contains:
+`backend/main.py` accepts `llm_batch` for chat, uploaded voice chat, and the voice WebSocket.
+`frontend/src/components/ProviderSelect.jsx` exposes the new option below Call Scout.
+Selection stays disabled during an active response or call and applies to the next call.
+Decisions remains the page's default while latency and source coverage are evaluated.
+The optional Jev interruption classifier continues to manage overlapping speech under its existing configuration.
 
-- `action`: `fetch_sources`, `answer_without_sources`, or `insufficient_sources`.
-- `paths`: zero to three entries, each containing a catalog-defined branch ID and an ordered list of catalog-defined source IDs.
-- `coverage`: the requested topic or question part each path is intended to address.
+## Limits and lifecycle
 
-Allow one path when sufficient and two or three when the question needs alternatives, exceptions, or multiple topics.
-Allow multiple source nodes within each path, with at most six distinct source nodes per request.
-Source IDs may be at different tree depths or in different documents.
-`answer_without_sources` is appropriate for greetings, clarifications, and off-topic responses, never unsupported factual answers.
-Do not use local keyword or utterance-length shortcuts for this routing.
+The initial limits are three paths, six distinct sources per batch, two batches, a 96,000-byte catalog, a 160,000-byte total model request, and 32,000 bytes of source evidence.
+Each model request has a 15-second deadline within a 45-second total turn budget.
+`NORMAL_LLM_REQUEST_TIMEOUT`, `NORMAL_LLM_MAX_SECONDS`, and `NORMAL_LLM_EVIDENCE_BYTES` configure the timing and evidence limits.
+Use `RETRIEVAL_MODE=llm_batch` for the standalone agent default.
 
-Validate the action, path count, source count, ID membership, source kind, ancestry, and duplicates before fetching anything.
-Validate the whole batch before applying it, and reject malformed or unknown references without substituting a different source.
-Schema validity does not establish that selected sources are relevant or sufficient.
+An oversized catalog or request fails explicitly instead of silently truncating the corpus.
+Invalid tool selections return a bounded error to Luna and consume a batch attempt.
+A deadline aborts pending model work, and cancellation propagates to the voice response owner.
+The model pools close with the existing application shutdown lifecycle.
+The recent cold-tokenizer fix remains in place.
 
-For example, "What are hostel costs and available scholarships?" may select the hostel fee source and hostel conditions under one branch, plus scholarship eligibility and relevant exceptions under another branch.
-Both branches are selected in the same Luna response.
-The model compares their navigation metadata during selection; it checks their factual text only after the server fetches it.
+## Tracing and verification
 
-## Source execution and answer handoff
+LangSmith records `normal_llm_agent`, each `luna_agent` call, and `read_pageindex` spans beneath the existing chat or voice trace.
+Source provenance, selected branches, omitted chunks, request size, model usage, timing, and errors are observable without including client credentials.
 
-Fetch the validated batch locally without another navigation decision between nodes.
-These sources already live in memory, so additional HTTP requests or worker threads are unnecessary.
-Preserve deterministic ordering, cancellation checks between fetches, and the existing per-source progress events.
-Deduplicate overlap between section text and original pages when it adds no new evidence.
+Focused local tests passed for deep-node selection, three-branch reads, whole-batch validation, source ancestry, evidence budgeting, one-call greetings, same-model factual responses, bounded follow-up reads, speech buffering, per-turn isolation, concurrent turns, deadlines, and cancellation.
+Native SDK HTTP fixtures verified synchronous and asynchronous tool-call parsing, tool result linkage, usage reporting, and parented traces.
+Graph and endpoint checks verified provider selection, preserved context, voice language, and that the old answer model is not called for `llm_batch`.
 
-Allocate evidence across the selected paths before reading, rather than letting the first large subsection consume the entire budget.
-Prefer complete source chunks, table headings, policy conditions, and adjacent exceptions.
-For split sections, track selected and omitted parts explicitly and retain their order.
-If all selected material cannot fit, omit whole lower-priority chunks and record which coverage remains incomplete.
-Do not silently halve source text or describe an unread section as checked.
-
-Return the common `RetrievalResult` shape so the graph can reuse its answer handoff.
-Add batch selection and fetched source entries to its history, with explicit limitations for omitted or unavailable material.
-Compute the available evidence allowance using the actual answer prompt, current question, retained history, and response reserve.
-The effective allowance is the smaller of the batch evidence cap and the answer context space available.
-Keep tokenizer initialization off the response path and preserve the recent cold-start fix.
-
-## One optional follow-up retrieval
-
-The normal factual flow is one Luna selection followed by one existing answer-model call.
-Do not insert an unconditional second Luna call just to declare readiness.
-The answer model evaluates the fetched text while composing the answer.
-
-For this provider, give the answer node one typed `request_more_sources` tool containing the missing question parts.
-When evidence is insufficient, it must request this tool before streaming user-facing answer text.
-That tool triggers one additional Luna batch using the existing evidence, the catalog, and the named gaps.
-The follow-up excludes already-read sources and fetches newly selected nodes under the remaining evidence and time budgets.
-Invoke the answer model again with tool use disabled for the final response.
-If coverage is still incomplete, answer only supported parts and state the limitation naturally.
-
-Buffer model output until a tool call or user-facing text is identified, so tool arguments never enter chat or TTS.
-Once user-facing answer text begins, do not initiate another retrieval batch for that turn.
-The correction flow therefore costs up to four model requests: selection, answer requesting more evidence, follow-up selection, and final answer.
-Trace those costs honestly; one-call traversal does not mean one total model request or complete source inspection within that selection call.
-
-## Initial limits and failure behavior
-
-Use separate batch-provider limits so the existing typed-decision limits remain meaningful.
-Initial proposed limits are a 96 KB catalog, 160 KB total selection request, 32 KB evidence ceiling, three paths, six sources per batch, two retrieval batches, and a 10-second total retrieval budget.
-Each Luna request has a five-second deadline bounded by the remaining retrieval budget.
-These are starting parameters to tune using latency and coverage measurements.
-The answer context allowance still takes precedence over the evidence ceiling.
-
-If a future corpus exceeds the catalog allowance, locally rank candidates across the entire corpus using titles, summaries, and conversation context before rendering a bounded catalog.
-Mark the catalog as incomplete and expose the omitted candidate count.
-Never take the first N documents by file order or treat a filtered catalog as proof that information is unavailable.
-Benchmark recall on the enlarged-corpus fixture before relying on this overflow behavior.
-
-Timeout, refusal, missing credentials, invalid output, oversized requests, and exhausted budgets produce explicit retrieval limitations.
-Do not silently switch to Jev or Decision API, which would obscure the comparison and add delays.
-Cancellation immediately aborts outstanding planner or answer work and preserves the existing response ID rules for TTS and playback.
-
-## LangSmith evidence
-
-Retain the existing root chat or voice trace and label the selected provider `llm_batch`.
-Add spans for catalog preparation, `llm_batch_select`, local source fetches, optional gap retrieval, and `llm_answer`.
-Record model and gateway, batch index, selected paths and IDs, candidate counts, catalog completeness, input size, usage, elapsed time, evidence size, omitted sources, stop reason, and cancellation.
-Exclude credentials and client objects.
-
-For voice evaluation, record elapsed durations from accepted transcript to first answer token, first complete sentence submitted to TTS, first audio packet sent, and browser playback start.
-Use elapsed time within each clock domain; correlate call and response IDs rather than subtracting unsynchronized server and browser timestamps.
-Distinguish generation cancellation, speech-provider failure, and caller interruption.
-Keep test traces out of the production project during verification.
-
-## Implementation sequence
-
-| Step | Files and responsibility | Reviewable outcome |
-| --- | --- | --- |
-| 1 | `Agent/documents.py` and document tests | Cached catalog with direct references across hierarchy levels and chunk relationships. |
-| 2 | New `Agent/llm_batch.py` and batch retrieval tests | Async Luna selection, schema validation, source batching, budgets, common result contract, and tracing. |
-| 3 | `Agent/graph.py` and graph tests | Three-provider registry and optional bounded gap retrieval before answer streaming. |
-| 4 | `backend/main.py`, endpoint tests, and voice pipeline tests | Chat and voice accept the provider and preserve call cancellation and lifecycle behavior. |
-| 5 | `frontend/src/components/ProviderSelect.jsx` and frontend verification | Third dropdown option reaches both request paths and remains disabled during active responses and calls. |
-| 6 | `.env.example` and `README.md` | Model settings, limits, selection behavior, and evaluation instructions. |
-
-During implementation, make small atomic commits after each coherent change.
-Preserve unrelated working-tree changes and regenerate dependency lockfiles using their package tooling only if dependencies change.
-
-## Verification and adoption criteria
-
-Deterministic tests must prove that one planner request can select nodes several levels below document roots and retrieve sources from two or three branches without intervening navigation calls.
-Cover one-path selection, split sections, cross-document overlap, greetings, contextual follow-ups, Hindi and Hinglish, missing evidence, conflicts, invalid IDs, wrong ancestry, duplicate selections, oversized catalogs, budget allocation, timeout, refusal, and cancellation.
-Prove that the optional gap path runs at most once, excludes already-read sources, and never sends tool arguments to chat or TTS.
-Keep Jev and Decision API regression tests passing, including concurrent requests selecting different providers.
-
-Verify the dropdown in chat and real voice calls, including changing providers between calls and cancelling while Luna is selecting sources.
-Run the existing Python suites, playback tests, lint, and frontend build appropriate to the implementation.
-
-Benchmark all three providers on the same question set, with the same answer model, document corpus, conversation state, and speech configuration.
-Include hostel details, hostel fees and exceptions, scholarship overview and eligibility, hostel plus scholarship questions, contextual follow-ups, multilingual questions, greetings, and unanswerable requests.
-Run at least five repetitions per factual question and separate cold-start from warm measurements.
-Compare median and tail retrieval latency, time to first spoken answer, total model requests, tokens, cost, evidence coverage, incorrect claims, cancellations, and failures.
-
-The initial target is at least a 30 percent reduction in median retrieval latency on the representative factual set without worse source coverage or unsupported answers.
-Also require improvement in time to first spoken answer and no material tail-latency regression.
-This target is an acceptance criterion, not a predicted result.
-If the larger catalog erases the savings, tune catalog compression and selection limits before promoting the option.
-Keep the option selectable for evaluation until these results support changing the default.
+The live gateway capability probe passed.
+Full live calls against the actual PageIndex corpus, microphone input, browser playback, and comparative latency measurements remain unverified.
+Further testing was stopped at the user's request before PR creation.
+Evaluate warm and cold calls using the same corpus, question, conversation, and speech settings before claiming faster responses or promoting the default.

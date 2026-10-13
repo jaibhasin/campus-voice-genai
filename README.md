@@ -57,16 +57,34 @@ Deploy the frontend and backend together because voice calls require protocol ve
 ## Retrieval providers
 
 OpenAI Decisions (`openai/gpt-6-luna-decisions` through OpenRouter's `POST /api/alpha/decisions`) navigates local PageIndex documents and selects source text by default; the answer LLM responds using that evidence.
-Use the compact dropdown below Call Scout to switch between Decisions and Jev.
+Use the compact dropdown below Call Scout to select Decisions, Jev, or Normal LLM (GPT-6 Luna).
 The selection applies to text chat and new voice calls, stays fixed during a reply or call, and resets to Decisions on a page refresh.
 Switching providers preserves the current conversation.
-Chat and voice share thread-scoped conversation summaries and recent history, with fresh retrieval for each question.
+Chat and voice retain thread-scoped conversation context, with fresh source evidence for each question.
 Retrieval is bounded by round, time, and request-size limits; incomplete retrieval is passed to the answer LLM as a limitation.
 `RETRIEVAL_MAX_ROUNDS`, `RETRIEVAL_MAX_SECONDS`, and `RETRIEVAL_REQUEST_TIMEOUT` configure both providers; the legacy `JEV_*` limit variables remain supported.
-Chat requests accept `retrieval_provider: "decisions" | "jev"`, defaulting to `"decisions"`.
+Chat requests accept `retrieval_provider: "decisions" | "jev" | "llm_batch"`, defaulting to `"decisions"`.
 The voice WebSocket accepts the same values in its `retrieval_provider` query parameter.
 Unavailable providers report incomplete retrieval rather than silently switching providers.
 For standalone agents, `RETRIEVAL_MODE=jev` selects Jev and `RETRIEVAL_MODE=llm` keeps the original LLM tool-selection baseline.
+
+Normal LLM uses the same `openai/gpt-6-luna` model through OpenRouter to choose between a direct response and `read_pageindex` tool calls.
+Greetings and clarifications can use one model call.
+Factual questions normally use two calls to Luna: select sources, then answer using their actual text.
+The first call sees a cached catalog and can select up to six source nodes across three branches at any depth, without opening every parent separately.
+If evidence is missing, one further batch is allowed before a final Luna reply with tools disabled.
+Source IDs, ancestry, and duplicate reads are validated before the entire batch executes.
+Whole source chunks are retained under a shared evidence allowance; omitted chunks are reported to the model as incomplete evidence.
+Query arguments and prose accompanying tool calls are never sent to TTS.
+Tool-capable model text is buffered until the response is known to be a reply.
+
+Use `RETRIEVAL_MODE=llm_batch` to make this mode the standalone agent default.
+`NORMAL_LLM_REQUEST_TIMEOUT`, `NORMAL_LLM_MAX_SECONDS`, and `NORMAL_LLM_EVIDENCE_BYTES` default to 15 seconds per model call, 45 seconds per turn, and 32,000 bytes of source evidence.
+The catalog is bounded to 96,000 bytes and total requests to 160,000 bytes.
+An oversized catalog fails explicitly rather than silently omitting documents.
+This mode uses bounded recent conversation and any existing summary without invoking the separate summarizer.
+The optional Jev voice interruption classifier remains separate from Luna's answering and source selection.
+Compare observed latency and source coverage before changing the default; fewer requests alone do not prove faster replies.
 
 ## LangSmith
 
