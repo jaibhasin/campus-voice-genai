@@ -12,6 +12,7 @@ export default function ProviderSelect({ value, onChange, disabled }) {
       >
         <option value="decisions">Decisions</option>
         <option value="jev">Jev</option>
+        <option value="llm_batch">Normal LLM (GPT-6 Luna)</option>
       </select>
     </label>
   );
