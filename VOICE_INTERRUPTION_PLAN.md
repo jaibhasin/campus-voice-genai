@@ -278,7 +278,7 @@ Completion requires:
 The classifier, response ownership, reversible playback, protocol, busy-state handling, and lifecycle protections are implemented.
 The setup instructions and optional feature flag are documented in `README.md` and `.env.example`.
 
-The Python verification suite passes 108 tests, including classifier decisions, timeouts, short answers, overlapping fragments, cancellation races, provider failures, and separate calls.
+The Python verification suite passes 111 tests, including classifier decisions, timeouts, short answers, overlapping fragments, cancellation races, provider failures, graceful shutdown, and separate calls.
 The deterministic playback suite passes nine tests.
 The frontend production build passed.
 
@@ -295,3 +295,22 @@ This check exposed and verified the fix for punctuation-only synthesis fragments
 These checks establish the implementation and controlled behavior, including real provider integration.
 They do not establish all-language accuracy, performance percentiles, or live human microphone behavior across devices.
 Broader call evaluation remains part of opt-in rollout rather than a claim of completed coverage.
+
+## Official Sarvam documentation review
+
+Reviewed the current official documentation on 2026-10-13.
+
+- [Realtime STT guide](https://docs.sarvam.ai/api/api-guides-tutorials/speech-to-text/realtime-streaming): confirms adaptive language detection, fast partials, VAD turn boundaries, mono linear16 input at 16 kHz, structured fatal/nonfatal errors, and a graceful end message.
+- [TTS WebSocket guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/streaming-api/web-socket): confirms config-before-text, flushing remaining text, final completion events, and closing the interrupted TTS socket before opening a fresh response connection.
+- [TTS overview](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/overview): documents WAV streaming, the supported 22,050 Hz output rate, and short text messages for low latency.
+
+Sarvam documents no server-side TTS cancel/clear message.
+This supports the implemented response-scoped socket ownership and client-side audio invalidation.
+Temporary acknowledgment pauses preserve the current response; confirmed interruptions close its socket.
+
+The documentation continues to support the selected `saaras:v3-realtime` and `bulbul:v3` models.
+It also lists newer model options; changing model or voice selection is separate from this interruption feature.
+The installed Python SDK's `target_language_code` configuration argument maps to the documented TTS language field and has been verified against the live service.
+
+Fatal recognition events surface a safe call error, while nonfatal errors allow recognition to continue.
+Call cleanup attempts a bounded graceful recognition end before closing the STT connection.
