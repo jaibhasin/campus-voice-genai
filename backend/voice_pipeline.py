@@ -29,7 +29,7 @@ def configured_ms(name, default, minimum=1, maximum=10000):
     return max(minimum, min(maximum, value)) / 1000
 
 
-async def voice_pipeline(websocket: WebSocket, voice_agent):
+async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="decisions"):
     """Retain the current response until an overlapping utterance takes a turn."""
     await websocket.accept()
     enabled = os.getenv("VOICE_INTERRUPTION_ENABLED", "false").lower() in {"true", "1", "yes"}
@@ -179,6 +179,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent):
             try:
                 async for event in voice_agent.astream(text, config={"configurable": {
                     "thread_id": thread_id, "response_language": response_language,
+                    "retrieval_provider": retrieval_provider,
                 }}):
                     if not owns(owner):
                         return

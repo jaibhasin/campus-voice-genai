@@ -27,7 +27,7 @@ function float32ToPcm16(float32Array) {
  * 2. Backend check-ins after 60 seconds of actual call inactivity.
  * 3. Persistent, scrollable transcription history viewable throughout the call.
  */
-export default function CallOverlay({ isOpen, onClose }) {
+export default function CallOverlay({ isOpen, onClose, retrievalProvider = "decisions" }) {
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   const [callState, setCallState] = useState("connecting");
@@ -192,7 +192,8 @@ const startAudioCapture = useCallback((stream, ws) => {
         return;
       }
       micStreamRef.current = stream;
-      const ws = new WebSocket(API_URL.replace(/^http/, "ws") + "/api/voice/ws");
+      const ws = new WebSocket(API_URL.replace(/^http/, "ws") +
+        `/api/voice/ws?retrieval_provider=${encodeURIComponent(retrievalProvider)}`);
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
       let ready = false;
@@ -356,7 +357,7 @@ const startAudioCapture = useCallback((stream, ws) => {
     } catch (error) {
       failCall(error.name === "NotAllowedError" ? "Microphone access is required to start a call." : error.message);
     }
-  }, [releaseCallResources, startAudioCapture]);
+  }, [releaseCallResources, startAudioCapture, retrievalProvider]);
 
   useEffect(() => {
     if (!isOpen) return;
