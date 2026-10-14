@@ -1,0 +1,8 @@
+# Expose only Twilio's signed webhook and WebSocket routes.
+on_http_request:
+  - expressions:
+      - "!(req.url.path in ['/api/telephony/voice', '/api/telephony/media', '/api/telephony/call-status', '/api/telephony/stream-status'])"
+    actions:
+      - type: deny
+        config:
+          status_code: 404

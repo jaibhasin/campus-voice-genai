@@ -665,6 +665,10 @@ class Agent:
             yield event
         yield {"type": "done", "full_content": content, "tool_calls": calls}
 
+    async def forget_thread(self, thread_id: str):
+        """Release a finished phone conversation without affecting other threads."""
+        await self.runnable.checkpointer.adelete_thread(thread_id)
+
     async def aclose(self):
         for retriever in self.retrievers.values():
             await retriever.client.aclose()

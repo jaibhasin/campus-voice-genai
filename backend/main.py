@@ -32,8 +32,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Provider configuration must be loaded before importing the agent.
-from Agent.graph import Agent  # noqa: E402
-from Agent.prompts.prompts import voice_assistant_system_prompt  # noqa: E402
+from Agent.graph import Agent
+from Agent.prompts.prompts import voice_assistant_system_prompt
+from backend.twilio_routes import configure_telephony
+from backend.twilio_routes import router as telephony_router
 
 # ──────────────────────────────────────────────
 #  Shared instances (created once on startup)
@@ -72,10 +74,13 @@ async def lifespan(app: FastAPI):
         print("[BOOT] SARVAM_API_KEY not set — voice features disabled")
 
     try:
+        configure_telephony(app, voice_agent_instance, sarvam_key)
         yield
     finally:
         print("[SHUTDOWN] Cleaning up...")
         try:
+            if getattr(app.state, "telephony", None) is not None:
+                await app.state.telephony.aclose()
             await agent_instance.aclose()
             await voice_agent_instance.aclose()
         finally:
@@ -92,6 +97,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.include_router(telephony_router)
 
 # CORS — allow all origins (public chatbot API)
 app.add_middleware(
@@ -136,6 +142,7 @@ async def health():
         "status": "ok",
         "agent": agent_instance is not None,
         "sarvam": sarvam_client is not None,
+        "telephony": getattr(app.state, "telephony", None) is not None,
         "name": "Scout API",
     }
 

@@ -38,6 +38,77 @@ The backend uses `OPENROUTER_API_KEY` for both OpenAI Decisions retrieval and fi
 Set `TYPESAFE_API_KEY` to enable the optional Jev retrieval provider and voice interruption classification.
 Keep all provider keys on the server; never use `NEXT_PUBLIC_` variables for credentials.
 
+## Telephone calls with Twilio
+
+Scout supports inbound calls and an explicit local command to call your configured mobile.
+The backend, tunnel, and internet connection must remain running throughout a call.
+The current Twilio trial docs block Media Streams, so verify streaming access on your older account or upgrade before a real test.
+For calls to India, use a non-Indian Twilio caller number and enable India in Voice geographic permissions.
+[Trial restrictions](https://www.twilio.com/docs/usage/trials/try-out-voice#blocked-verbs) and [India calling guidelines](https://www.twilio.com/en-us/guidelines/in/voice) describe these requirements.
+
+Add the `TWILIO_*` values from `.env.example` to your ignored local `.env`.
+Use E.164 numbers for `TWILIO_PHONE_NUMBER` and `TWILIO_ALLOWED_PHONE_NUMBER`, and set `TWILIO_ENABLED=true` once they are configured.
+Only the configured mobile can call Scout or receive an outbound call.
+Phone calls default to Normal LLM (GPT-6 Luna), with validated PageIndex batches and spoken replies streamed sentence by sentence.
+Set `TWILIO_RETRIEVAL_PROVIDER=decisions` or `jev` to choose another provider.
+Set `VOICE_INTERRUPTION_ENABLED=true` to enable contextual acknowledgments and interruptions on phone calls as well as browser calls.
+
+Start the backend with one worker and without auto-reload:
+
+```bash
+uv run uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+In another terminal, start ngrok with the included policy, which exposes only the signed telephony endpoints:
+
+```bash
+ngrok http 8000 --traffic-policy-file ngrok-telephony.yml --inspect=false
+```
+
+Use ngrok's assigned HTTPS origin as `TWILIO_PUBLIC_BASE_URL`, then restart the backend before making calls.
+Do not put a path, query string, or secret in that value.
+Configure your Twilio number's incoming voice webhook as `https://<your-ngrok-domain>/api/telephony/voice`, method POST.
+Dial the Twilio number from your permitted mobile for an inbound call.
+International dialing charges from your carrier may apply.
+For custom domains, Cloudflare named tunnels are also suitable; see [the phone integration plan](TWILIO_PHONE_PLAN.md).
+
+To have Scout call your mobile, keep the backend and tunnel running and use a unique request ID:
+
+```bash
+uv run python -m backend.call_scout --request-id call-001
+```
+
+Repeating a successful request ID returns its original Call SID and does not redial.
+The ignored `.state/phone-calls.sqlite3` file stores dialing intent before the API request, preventing duplicate calls after ambiguous timeouts or process crashes.
+A new request is blocked while a previous outbound call is still active or its outcome is unknown.
+Do not delete this file to recover from a timeout.
+Check Twilio Console, then reconcile the unknown request with the matching Call SID:
+
+```bash
+uv run python -m backend.call_scout --resolve-request call-001 --call-sid CA...
+```
+
+If Console confirms that no call was created, use `--no-call-created` instead of `--call-sid`, then use a new request ID for the next attempt.
+Outbound calls are limited to the configured destination, do not record audio, and never retry call creation automatically.
+Call status callbacks reconcile inbound server state; the local command checks Twilio's live status before allowing another outbound request.
+
+To verify the live speech providers without placing a telephone call:
+
+```bash
+uv run python -m backend.phone_probe
+```
+
+This synthesizes a short hostel-fee question and checks that Sarvam recognizes it through the same 8 kHz mu-law settings used for calls.
+It prints sanitized stages and format/results, using a small amount of Sarvam API usage.
+Phone input is retained for at most twenty seconds and synthesis output for at most ten seconds per packet.
+Playback uses short marked segments with approximately 200 ms outstanding audio; a temporary pause can let that short tail finish before an acknowledgment resumes the answer.
+Real interruptions clear buffered audio and cancel the owned answer.
+Speech recognition startup is limited to twenty seconds, each speech-synthesis connection has a fifteen-second deadline, and calls are limited to `TWILIO_MAX_CALL_SECONDS` (600 by default).
+Hangup, provider failure, deadline, and shutdown close the call session and remove its in-memory conversation checkpoints.
+
+The implementation has deterministic Twilio protocol tests and a successful live Sarvam codec probe.
+Actual Twilio/carrier calls, public signature validation through ngrok, and phone latency still require account configuration and real-call testing.
+
 ## Voice interruptions
 
 Set `VOICE_INTERRUPTION_ENABLED=true` in `.env` to classify speech that overlaps Scout's playback with Jev.

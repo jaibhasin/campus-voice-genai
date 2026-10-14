@@ -276,6 +276,20 @@ class GraphTests(unittest.TestCase):
 
 
 class AsyncGraphTests(unittest.IsolatedAsyncioTestCase):
+    async def test_finished_phone_checkpoint_cleanup_preserves_browser_conversation(self):
+        agent, _client, _model = make_agent([answer("ready_to_answer"), answer("ready_to_answer")])
+        phone = {"configurable": {"thread_id": "phone:finished"}}
+        browser = {"configurable": {"thread_id": "browser:ongoing"}}
+        for config in [phone, browser]:
+            async for _event in agent.astream("Hello", config=config):
+                pass
+        saver = agent.runnable.checkpointer
+        self.assertIsNotNone(await saver.aget_tuple(phone))
+        self.assertIsNotNone(await saver.aget_tuple(browser))
+        await agent.forget_thread("phone:finished")
+        self.assertIsNone(await saver.aget_tuple(phone))
+        self.assertIsNotNone(await saver.aget_tuple(browser))
+
     async def test_concurrent_requests_keep_provider_selection_separate(self):
         agent, jev, model = make_agent([read_first, read_first, answer("ready_to_answer")])
         decisions = ScriptedClient([answer("ready_to_answer")])

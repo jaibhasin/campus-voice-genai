@@ -2,12 +2,16 @@
 
 import asyncio
 import base64
+import io
+import logging
 import re
 import struct
+import wave
 from dataclasses import dataclass, field
 
 from sarvamai.types.audio_output import AudioOutput
 
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 2
 
@@ -58,13 +62,16 @@ class VoiceResponse:
             self.text_queue.get_nowait()
 
 
-async def synthesize_response(response, client, send_json, send_bytes, on_audio, producer):
+async def synthesize_response(response, client, send_json, send_audio, on_audio, producer, *, audio_format=None):
     """Never relabel provider output with a successor response's ID.
 
     The receiver retains at most one provider packet while paused and stops reading
     the socket, applying transport backpressure. The sender stops at the same gate;
     bounded token queues then slow generation instead of dropping middle segments.
     """
+    from backend.voice_transport import BROWSER_AUDIO, VoiceAudioChunk
+
+    audio_format = audio_format or BROWSER_AUDIO
     connection = client.text_to_speech_streaming.connect(
         model="bulbul:v3", send_completion_event="true",
     )
@@ -73,7 +80,8 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
         tts = await asyncio.wait_for(connection.__aenter__(), timeout=15)
         await tts.configure(
             target_language_code=response.language, speaker="shubh",
-            output_audio_codec="wav", speech_sample_rate=22050,
+            output_audio_codec=audio_format.output_encoding,
+            speech_sample_rate=audio_format.output_sample_rate,
         )
 
         async def convert(text):
@@ -116,17 +124,24 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
                     encoded = event.data.audio
                     if len(encoded) > 4 * 1024 * 1024:
                         raise ValueError("Voice provider audio packet exceeds retention bound")
-                    audio = base64.b64decode(encoded)
+                    audio = base64.b64decode(encoded, validate=True)
                     if audio.startswith(b"RIFF"):
-                        audio = audio[44:]
+                        if audio_format.output_encoding != "wav":
+                            raise ValueError("Expected raw telephony audio, received a container")
+                        with wave.open(io.BytesIO(audio), "rb") as wav:
+                            if (wav.getnchannels() != 1 or wav.getsampwidth() != 2
+                                    or wav.getframerate() != audio_format.output_sample_rate):
+                                raise ValueError("Speech audio format does not match configuration")
+                            audio = wav.readframes(wav.getnframes())
                     if audio:
                         response.audio_sent = True
                         response.playback_complete = False
                         on_audio(response)
-                        packet = struct.pack(
-                            ">BI", PROTOCOL_VERSION, response.response_id,
-                        ) + pcm16_to_wav(audio)
-                        await send_bytes(packet)
+                        await send_audio(VoiceAudioChunk(
+                            response.response_id, audio,
+                            "linear16" if audio_format.output_encoding == "wav" else audio_format.output_encoding,
+                            audio_format.output_sample_rate,
+                        ))
                 elif type(event).__name__ == "EventResponse" and event.data.event_type == "final":
                     await send_json({"type": "tts_done", "response_id": response.response_id})
                     return
@@ -146,5 +161,5 @@ async def synthesize_response(response, client, send_json, send_bytes, on_audio,
         await asyncio.gather(*children, return_exceptions=True)
         try:
             await asyncio.wait_for(connection.__aexit__(None, None, None), timeout=2)
-        except Exception:
-            pass
+        except Exception as error:  # noqa: BLE001 - External provider/socket boundary.
+            logger.debug("Voice boundary failure: %s", type(error).__name__)
