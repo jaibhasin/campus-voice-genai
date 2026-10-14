@@ -114,7 +114,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
         await asyncio.sleep(grace)
         if uid != utterance_id or not owns(owner):
             return
-        if activity.user_speaking or activity.interruption_pending or activity.awaiting_transcript:
+        # Only sustained caller speech pauses speculatively. A completed short
+        # utterance keeps playing while STT and the classifier finish.
+        if activity.user_speaking:
             owner.playable.clear()
             activity.playback_paused = True
             activity.touch()
@@ -285,9 +287,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             decision_task = launch(classify_utterance(
                 utterance_id, owner, text, detected_language, detected_confidence,
             ))
-            # A final without VAD still gets a bounded pause if the decision is slow.
-            if grace_task is None or grace_task.done():
-                schedule_grace(utterance_id)
         else:
             await accept_turn(text, detected_language, detected_confidence)
 
@@ -368,8 +367,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                         ):
                             overlap_response_id = response.response_id
                         utterance_open = True
-                        if enabled and overlap_response_id is not None:
-                            schedule_grace(utterance_id)
                     fragments.append(transcript)
                     detected_language = getattr(event, "language", None)
                     detected_confidence = getattr(event, "language_confidence", None)
