@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
+import os
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sarvamai import AsyncSarvamAI
@@ -25,7 +27,8 @@ class TelephonyRuntime:
         settings.validate()
         self.settings = settings
         self.voice_agent = voice_agent
-        self.sarvam = AsyncSarvamAI(api_subscription_key=sarvam_key)
+        self.http_client = httpx.AsyncClient(timeout=60)
+        self.sarvam = AsyncSarvamAI(api_subscription_key=sarvam_key, httpx_client=self.http_client)
         self.registry = CallRegistry(settings)
         self.sessions = set()
 
@@ -34,7 +37,10 @@ class TelephonyRuntime:
         tasks = list(self.sessions)
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            await self.http_client.aclose()
 
 
 def get_runtime(app):
@@ -45,6 +51,11 @@ def get_runtime(app):
 
 
 async def signed_form(request, runtime):
+    if not request.headers.get("x-twilio-signature"):
+        raise HTTPException(status_code=403, detail="Twilio signature is required")
+    length = request.headers.get("content-length", "0")
+    if not length.isdecimal() or int(length) > 16384:
+        raise HTTPException(status_code=413, detail="Webhook too large")
     body = await request.body()
     if len(body) > 16384:
         raise HTTPException(status_code=413, detail="Webhook too large")
@@ -107,10 +118,16 @@ async def stream_status(request: Request):
 
 
 async def start_message(websocket):
-    connected = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+    async def frame():
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=5)
+        if len(raw) > 16384:
+            raise ValueError("Twilio setup frame is oversized")
+        return json.loads(raw)
+
+    connected = await frame()
     if connected != {"event": "connected", "protocol": "Call", "version": "1.0.0"}:
         raise ValueError("Unsupported Twilio stream protocol")
-    message = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+    message = await frame()
     if not isinstance(message, dict) or message.get("event") != "start":
         raise ValueError("Twilio start event is required")
     start = message["start"]
@@ -148,10 +165,18 @@ async def media(websocket: WebSocket):
         ))
         stop = asyncio.create_task(call.stop.wait())
         disconnected = asyncio.create_task(transport.closed.wait())
-        tasks = [session, stop, disconnected]
+        ready = asyncio.create_task(transport.ready.wait())
+        tasks = [session, stop, disconnected, ready]
+        deadline = asyncio.get_running_loop().time() + runtime.settings.max_call_seconds
         done, _pending = await asyncio.wait(
-            tasks, timeout=runtime.settings.max_call_seconds, return_when=asyncio.FIRST_COMPLETED,
+            tasks, timeout=20, return_when=asyncio.FIRST_COMPLETED,
         )
+        if ready in done and not transport.closed.is_set() and not call.stop.is_set():
+            done, _pending = await asyncio.wait(
+                [session, stop, disconnected],
+                timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         if session in done:
             session.result()
     except WebSocketDisconnect:
@@ -178,9 +203,9 @@ async def media(websocket: WebSocket):
 
 
 def configure_telephony(app, voice_agent, sarvam_key):
-    settings = TwilioSettings.from_env()
     app.state.telephony = None
-    if settings.enabled:
+    if os.getenv("TWILIO_ENABLED", "false").lower() in {"true", "1", "yes"}:
+        settings = TwilioSettings.from_env()
         if not sarvam_key:
             raise ValueError("SARVAM_API_KEY is required for phone calling")
         app.state.telephony = TelephonyRuntime(settings, voice_agent, sarvam_key)

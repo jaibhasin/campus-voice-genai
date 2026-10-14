@@ -22,11 +22,13 @@ class TwilioVoiceTransport:
     def __init__(self, websocket, admission):
         self.websocket = websocket
         self.admission = admission
-        self.inputs = asyncio.Queue(maxsize=128)
+        self.inputs = asyncio.Queue(maxsize=1024)
+        self.input_audio_bytes = 0
         self.writer = asyncio.Lock()
         self.playable = asyncio.Event()
         self.capacity = asyncio.Event()
         self.closed = asyncio.Event()
+        self.ready = asyncio.Event()
         self.playable.set()
         self.capacity.set()
         self.response_id = None
@@ -43,11 +45,16 @@ class TwilioVoiceTransport:
         self.reader = asyncio.create_task(self._read())
 
     async def receive(self):
-        return await self.inputs.get()
+        event = await self.inputs.get()
+        self.input_audio_bytes -= len(event.audio)
+        return event
 
     def _enqueue(self, event):
+        if self.input_audio_bytes + len(event.audio) > 160000:
+            raise BufferError("Caller audio exceeded twenty seconds of retained input")
         try:
             self.inputs.put_nowait(event)
+            self.input_audio_bytes += len(event.audio)
         except asyncio.QueueFull as error:
             raise BufferError("Phone input exceeded its retention bound") from error
 
@@ -58,6 +65,7 @@ class TwilioVoiceTransport:
         self.pending.clear()
         while not self.inputs.empty():
             self.inputs.get_nowait()
+        self.input_audio_bytes = 0
         self.inputs.put_nowait(VoiceInput("disconnect"))
 
     async def _write(self, event, **fields):
@@ -82,6 +90,7 @@ class TwilioVoiceTransport:
         kind = message["type"]
         rid = message.get("response_id")
         if kind == "voice_ready":
+            self.ready.set()
             self._enqueue(VoiceInput("control", {
                 "type": "tts", "text": "Hi, I'm Scout, your Thapar college assistant. How can I help you?",
             }))
@@ -143,7 +152,8 @@ class TwilioVoiceTransport:
                         return
                     payload = base64.b64encode(segment[position:position + FRAME_BYTES]).decode("ascii")
                     await self._write("media", media={"payload": payload})
-                await self._mark(rid)
+                if rid == self.response_id and generation == self.generation and not self.closed.is_set():
+                    await self._mark(rid)
 
     async def _read(self):
         try:

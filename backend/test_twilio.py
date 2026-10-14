@@ -3,10 +3,11 @@
 import asyncio
 import base64
 import json
+import os
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from xml.etree import ElementTree
 
 from fastapi import FastAPI
@@ -18,10 +19,10 @@ from sarvamai.types.event_response_data import EventResponseData
 from twilio.request_validator import RequestValidator
 
 from backend.test_voice_pipeline import FakeSarvamClient, FakeTtsSocket, QueueStt
-from backend.twilio_routes import router
+from backend.twilio_routes import TelephonyRuntime, configure_telephony, router
 from backend.twilio_security import CallRegistry, TwilioSettings, valid_signature
 from backend.twilio_transport import TwilioVoiceTransport
-from backend.voice_transport import VoiceAudioChunk
+from backend.voice_transport import VoiceAudioChunk, VoiceInput
 
 SETTINGS = TwilioSettings(
     enabled=True, account_sid="AC" + "a" * 32, auth_token="test-token",
@@ -200,6 +201,61 @@ class TwilioPlaybackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.kind, "disconnect")
         self.assertTrue(self.transport.failed)
 
+    async def test_cancel_during_last_frame_does_not_reinsert_a_stale_mark(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.socket.send_json
+
+        async def blocked(message):
+            if message["event"] == "media":
+                entered.set()
+                await release.wait()
+            await original(message)
+
+        self.socket.send_json = blocked
+        sending = asyncio.create_task(self.transport.send_audio(VoiceAudioChunk(1, b"\xff" * 160, "mulaw", 8000)))
+        await entered.wait()
+        cancel = asyncio.create_task(self.transport.send_event({"type": "response_cancelled", "response_id": 1}))
+        await asyncio.sleep(0)
+        self.assertIsNone(self.transport.response_id)
+        release.set()
+        await asyncio.gather(sending, cancel)
+        self.assertEqual([m["event"] for m in self.socket.history], ["media", "clear"])
+        self.assertEqual(self.transport.pending, {})
+
+    async def test_close_wakes_a_paused_sender_and_discards_retained_audio(self):
+        await self.transport.send_event({"type": "playback_pause", "response_id": 1, "utterance_id": 4})
+        sending = asyncio.create_task(self.transport.send_audio(VoiceAudioChunk(1, b"\xff" * 160, "mulaw", 8000)))
+        await self.transport.aclose()
+        await asyncio.wait_for(sending, 1)
+        self.assertEqual(self.socket.history, [])
+
+    async def test_input_buffer_covers_startup_but_has_a_byte_and_duration_bound(self):
+        for _ in range(50):
+            self.transport._enqueue(VoiceInput("audio", audio=b"\xff" * 3200))
+        with self.assertRaises(BufferError):
+            self.transport._enqueue(VoiceInput("audio", audio=b"\xff"))
+        self.assertEqual(self.transport.input_audio_bytes, 160000)
+        await self.transport.receive()
+        self.assertEqual(self.transport.input_audio_bytes, 156800)
+
+
+class TwilioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_cancels_call_tasks_and_closes_owned_http_client(self):
+        runtime = TelephonyRuntime(SETTINGS, object(), "test-key")
+        call = runtime.registry.reserve(call_params())
+        task = asyncio.create_task(asyncio.Event().wait())
+        runtime.sessions.add(task)
+        await runtime.aclose()
+        self.assertTrue(task.done())
+        self.assertTrue(call.stop.is_set())
+        self.assertTrue(runtime.http_client.is_closed)
+
+    async def test_disabled_phone_settings_do_not_break_chat_startup(self):
+        app = FastAPI()
+        with patch.dict(os.environ, {"TWILIO_ENABLED": "false", "TWILIO_MAX_CALL_SECONDS": "not-a-number"}):
+            configure_telephony(app, object(), "")
+        self.assertIsNone(app.state.telephony)
+
 
 class TwilioRouteTests(unittest.TestCase):
     def setUp(self):
@@ -235,11 +291,36 @@ class TwilioRouteTests(unittest.TestCase):
             self.assertEqual(self.post("/api/telephony/call-status", params).status_code, 204)
         self.assertTrue(call.stop.is_set())
 
+    def test_unsigned_media_socket_is_rejected_before_provider_work(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        with self.assertRaises(WebSocketDisconnect), self.client.websocket_connect("/api/telephony/media"):
+            pass
+        self.assertEqual(self.app.state.telephony.sessions, set())
+
+    def test_call_deadline_ends_a_stalled_response_and_releases_admission(self):
+        runtime = self.app.state.telephony
+        runtime.settings = replace(SETTINGS, max_call_seconds=0.02)
+        runtime.sarvam = FakeSarvamClient(QueueStt(), FakeTtsSocket())
+        admission = runtime.registry.reserve(call_params())
+        signature = RequestValidator(SETTINGS.auth_token).compute_signature(SETTINGS.url("/api/telephony/media", websocket=True), {})
+        with patch("backend.voice_session.socket.getaddrinfo", return_value=[]), self.client.websocket_connect(
+            "/api/telephony/media", headers={"X-Twilio-Signature": signature},
+        ) as ws:
+            ws.send_json({"event": "connected", "protocol": "Call", "version": "1.0.0"})
+            ws.send_json({"event": "start", "sequenceNumber": "1", "streamSid": STREAM, "start": stream_start(admission)})
+            self.assertEqual(ws.receive()["type"], "websocket.close")
+        self.assertTrue(admission.stop.is_set())
+        self.agent.forget_thread.assert_awaited_once_with("phone:" + CALL)
+        self.assertEqual(runtime.sessions, set())
+
     def test_real_shared_session_over_twilio_frames_greets_and_answers_then_cleans_up(self):
         stt = QueueStt()
         tts = FakeTtsSocket()
         runtime = self.app.state.telephony
         runtime.sarvam = FakeSarvamClient(stt, tts)
+        service = runtime.sarvam.speech_to_text_realtime_streaming
+        service.connect = Mock(wraps=service.connect)
         queries = []
 
         async def answer(text, **kwargs):
@@ -292,6 +373,9 @@ class TwilioRouteTests(unittest.TestCase):
         self.agent.forget_thread.assert_awaited_once_with("phone:" + CALL)
         self.assertTrue(admission.stop.is_set())
         self.assertEqual(runtime.sessions, set())
+        settings = service.connect.call_args.kwargs
+        self.assertEqual((settings["encoding"], settings["sample_rate"], settings["silence_duration_ms"]),
+                         ("mulaw", "8000", "500"))
 
 
 if __name__ == "__main__":
