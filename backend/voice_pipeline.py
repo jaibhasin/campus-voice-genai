@@ -245,7 +245,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             "recent_history": list(recent_history),
             "last_user_text": last_user_text,
             "overlap": True,
-            "answer_requested": "?" in owner.generated_text or "？" in owner.generated_text,
             "thread_id": thread_id,
         }
         try:

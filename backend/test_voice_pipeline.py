@@ -631,16 +631,25 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call[0] for call in self.agent.calls][1:], ["no", "what?"])
         self.assertTrue(all(connection.closed for connection in self.client.text_to_speech_streaming.connections[:-1]))
 
-    async def test_question_context_is_labeled_generated_and_requests_answer(self):
+    async def test_question_context_is_labeled_generated_without_guessing_intent(self):
         self.agent.text = "Do you want to compare CSE and ECE?"
         await self.start()
         await self.utterance("okay")
         await self.browser.event("acknowledgment")
         context = self.classifier.classify.await_args.args[1]
-        self.assertTrue(context["answer_requested"])
+        self.assertIsNone(context.get("answer_requested"))
         self.assertTrue(context["overlap"])
         self.assertEqual(context["assistant_text"], self.agent.text)
         self.assertEqual(context["last_user_text"], self.agent.calls[0][0])
+
+    async def test_quoted_question_does_not_force_acknowledgment_to_take_turn(self):
+        self.agent.text = 'You asked "What are the fees?" The hostel fees include meals.'
+        await self.start()
+        await self.utterance("okay")
+        await self.browser.event("acknowledgment", 1)
+        context = self.classifier.classify.await_args.args[1]
+        self.assertIsNone(context.get("answer_requested"))
+        self.assertEqual(context["assistant_text"], self.agent.text)
 
     async def test_late_acknowledgment_retains_overlap_after_watchdog_and_playback_end(self):
         await self.start()
