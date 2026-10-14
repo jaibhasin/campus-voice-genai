@@ -293,7 +293,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             await accept_turn(text, detected_language, detected_confidence)
 
     async def transcript_watchdog(uid):
-        nonlocal utterance_open, overlap_response_id
         await asyncio.sleep(transcript_timeout)
         if uid != utterance_id or activity.user_speaking:
             return
@@ -302,8 +301,8 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             # A newer empty utterance cannot erase an earlier pending question.
             await decide_pending()
         else:
-            utterance_open = False
-            overlap_response_id = None
+            # Recover playback, but keep the VAD overlap until a final arrives.
+            # A slow transcript still belongs to the speech that interrupted it.
             stop_task(grace_task)
             await resume(uid)
 
@@ -332,6 +331,8 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                     activity.user_speaking = True
                     activity.awaiting_transcript = False
                     audible = activity.playback_active or activity.playback_paused
+                    if not fragments:
+                        overlap_response_id = None
                     if response and owns(response) and audible:
                         overlap_response_id = response.response_id
                     if enabled and overlap_response_id is not None:

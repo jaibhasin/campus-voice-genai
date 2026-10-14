@@ -642,6 +642,19 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context["assistant_text"], self.agent.text)
         self.assertEqual(context["last_user_text"], self.agent.calls[0][0])
 
+    async def test_late_acknowledgment_retains_overlap_after_watchdog_and_playback_end(self):
+        await self.start()
+        await self.stt.event("RealtimeVadSpeechStart")
+        await self.browser.event("playback_pause", 1)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.browser.event("playback_resume", 1)
+        await self.browser.command("playback_done", response_id=1)
+        await self.browser_barrier()
+        await self.stt.event("RealtimeTranscriptFinal", "okay")
+        await self.browser.event("acknowledgment", 1)
+        self.classifier.classify.assert_awaited_once()
+        self.assertEqual(len(self.agent.calls), 1)
+
     async def test_silent_input_bypasses_classifier(self):
         await self.start(initial=False)
         await self.stt.event("RealtimeTranscriptFinal", "no")
