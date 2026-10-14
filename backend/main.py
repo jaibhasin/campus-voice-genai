@@ -31,8 +31,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Agent.graph import Agent
-from Agent.prompts.prompts import voice_assistant_system_prompt
+# Provider configuration must be loaded before importing the agent.
+from Agent.graph import Agent  # noqa: E402
+from Agent.prompts.prompts import voice_assistant_system_prompt  # noqa: E402
 
 # ──────────────────────────────────────────────
 #  Shared instances (created once on startup)

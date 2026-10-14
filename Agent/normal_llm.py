@@ -1,6 +1,7 @@
 """One Luna model chooses between a spoken reply and bounded PageIndex reads."""
 
 import asyncio
+import json
 import os
 import time
 from dataclasses import asdict
@@ -8,13 +9,31 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langsmith import traceable
+from pydantic import BaseModel, ConfigDict, Field
 
-from .batch_pageindex import PAGEINDEX_TOOL, BatchPageIndex, compact_json
+from .batch_pageindex import BatchPageIndex, compact_json
 from .languages import VOICE_LANGUAGES
 from .models import OpenRouterChatOpenAI
 from .retrieval import RetrievalResult
 
 PROMPT = Path(__file__).with_name("prompts").joinpath("normal_llm.md").read_text()
+
+
+class ReplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: str = Field(min_length=1)
+
+
+REPLY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "reply",
+        "strict": True,
+        "description": "Deliver the final user-facing reply. Its text streams directly to the user; no further tools can run after choosing reply.",
+        "parameters": ReplyRequest.model_json_schema(),
+    },
+}
 
 
 def _trace_inputs(inputs):
@@ -47,8 +66,6 @@ class NormalLLMAgent:
             timeout=self.timeout,
             max_retries=0,
         )
-        self.with_tools = self.model.bind_tools([PAGEINDEX_TOOL], tool_choice="auto")
-        self.without_tools = self.model.bind_tools([PAGEINDEX_TOOL], tool_choice="none")
 
     def _messages(self, question, conversation, language, voice):
         style = (
@@ -69,12 +86,43 @@ class NormalLLMAgent:
 
     @staticmethod
     def _finish(chunk):
-        if chunk is None or chunk.invalid_tool_calls:
+        if chunk is None or chunk.invalid_tool_calls or len(chunk.tool_calls) != 1:
             raise RuntimeError("Normal LLM returned an invalid response")
+        call = chunk.tool_calls[0]
+        # Require complete JSON, not LangChain's repaired partial stream arguments.
+        arguments = json.loads(chunk.tool_call_chunks[0]["args"])
+        content, calls = "", chunk.tool_calls
+        if call["name"] == "reply":
+            content = ReplyRequest.model_validate(arguments).text
+            content.encode("utf-8")
+            calls = []
         return AIMessage(
-            content=chunk.content, tool_calls=chunk.tool_calls,
+            content=content, tool_calls=calls,
             response_metadata=chunk.response_metadata, usage_metadata=chunk.usage_metadata,
         )
+
+    @staticmethod
+    def _emit_reply(chunk, emitted, emit):
+        if len(chunk.tool_call_chunks) > 1:
+            raise RuntimeError("Normal LLM must choose one reply or one source batch")
+        if not chunk.tool_calls or chunk.tool_calls[0]["name"] != "reply":
+            return emitted
+        arguments = chunk.tool_calls[0]["args"]
+        # Incomplete Unicode escapes can temporarily hide the whole JSON field.
+        if "text" not in arguments:
+            return emitted
+        text = arguments["text"]
+        if not isinstance(text, str):
+            raise RuntimeError("Normal LLM reply text must be a string")
+        # JSON Unicode escapes can split a surrogate pair across provider chunks.
+        if text and 0xD800 <= ord(text[-1]) <= 0xDBFF:
+            text = text[:-1]
+        if not text.startswith(emitted):
+            raise RuntimeError("Normal LLM changed already-streamed reply text")
+        text.encode("utf-8")
+        if text[len(emitted):]:
+            emit({"type": "token", "content": text[len(emitted):]})
+        return text
 
     def _steps(self, question, conversation, language, voice, emit):
         messages = self._messages(question, conversation, language, voice)
@@ -85,19 +133,22 @@ class NormalLLMAgent:
             remaining = self.max_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise TimeoutError("Normal LLM response exceeded its total deadline")
-            allow_tools = turn < 2 and len(compact_json(result.evidence).encode("utf-8")) < self.evidence_limit
+            allow_tools = (
+                turn < 2 and any(key not in seen for key in self.index.source_ids)
+                and len(compact_json(result.evidence).encode("utf-8")) < self.evidence_limit
+            )
+            tools = [REPLY_TOOL]
+            if allow_tools:
+                tools.insert(0, self.index.tool_for(seen))
             # Include tool schemas in the limit and retain whole source chunks.
             request_bytes = len(compact_json({
                 "messages": [message.model_dump() for message in messages],
-                "tools": [PAGEINDEX_TOOL],
+                "tools": tools,
             }).encode("utf-8"))
             if request_bytes > 160000:
                 raise ValueError("Normal LLM request exceeds its context allowance")
-            response = yield messages, allow_tools, min(self.timeout, remaining), turn
+            response = yield messages, allow_tools, min(self.timeout, remaining), turn, tools
             if not response.tool_calls:
-                # Tool-capable output is buffered until we know it is a reply.
-                if allow_tools and response.content:
-                    emit({"type": "token", "content": response.content})
                 result.stop_reason = result.stop_reason or "answered"
                 return response, result
             if not allow_tools:
@@ -110,7 +161,7 @@ class NormalLLMAgent:
                     if not valid_batch or call["name"] != "read_pageindex":
                         raise ValueError("Use one read_pageindex batch per call")
                     allowance = self.evidence_limit - len(compact_json(result.evidence).encode("utf-8"))
-                    batch = self.index.read(call["args"].get("paths"), seen, max(0, allowance))
+                    batch = self.index.read(call["args"], seen, max(0, allowance))
                     result.evidence.extend(batch.evidence)
                     for source in batch.evidence:
                         seen.add(source["source_id"])
@@ -119,12 +170,12 @@ class NormalLLMAgent:
                         })})
                     packet = {"sources": batch.evidence, "omitted_sources": batch.omitted}
                     if batch.omitted:
-                        result.limitation = "Some selected source chunks did not fit; evidence is incomplete."
+                        result.limitation = "Some selected source chunks exceeded this batch's document or evidence limits; evidence is incomplete."
                         packet["limitation"] = result.limitation
                     result.history.append({
                         "round": turn + 1, "action": "read_sources",
                         "source_ids": [source["source_id"] for source in batch.evidence],
-                        "paths": call["args"]["paths"], "omitted": batch.omitted,
+                        "branch_ids": batch.branch_ids, "omitted": batch.omitted,
                     })
                 except (ValueError, TypeError, AttributeError):
                     result.limitation = "The source request was invalid; no sources were read for that request."
@@ -145,17 +196,18 @@ class NormalLLMAgent:
         response = None
         while True:
             try:
-                messages, tools, timeout, turn = steps.send(response)
+                messages, can_read, timeout, turn, tools = steps.send(response)
             except StopIteration as done:
                 return done.value
-            chunks, deadline = None, time.monotonic() + timeout
-            model = self.with_tools if tools else self.without_tools
+            chunks, emitted, deadline = None, "", time.monotonic() + timeout
+            model = self.model.bind_tools(
+                tools, tool_choice="required" if can_read else "reply", parallel_tool_calls=False, strict=True,
+            )
             for chunk in model.stream(messages, config=self._config(turn), timeout=timeout):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Normal LLM request exceeded its deadline")
                 chunks = chunk if chunks is None else chunks + chunk
-                if not tools and isinstance(chunk.content, str) and chunk.content and not chunk.tool_call_chunks:
-                    emit({"type": "token", "content": chunk.content})
+                emitted = self._emit_reply(chunks, emitted, emit)
             response = self._finish(chunks)
 
     @traceable(name="normal_llm_agent", process_inputs=_trace_inputs, process_outputs=_trace_outputs)
@@ -164,16 +216,17 @@ class NormalLLMAgent:
         response = None
         while True:
             try:
-                messages, tools, timeout, turn = steps.send(response)
+                messages, can_read, timeout, turn, tools = steps.send(response)
             except StopIteration as done:
                 return done.value
-            chunks = None
-            model = self.with_tools if tools else self.without_tools
+            chunks, emitted = None, ""
+            model = self.model.bind_tools(
+                tools, tool_choice="required" if can_read else "reply", parallel_tool_calls=False, strict=True,
+            )
             async with asyncio.timeout(timeout):
                 async for chunk in model.astream(messages, config=self._config(turn)):
                     chunks = chunk if chunks is None else chunks + chunk
-                    if not tools and isinstance(chunk.content, str) and chunk.content and not chunk.tool_call_chunks:
-                        emit({"type": "token", "content": chunk.content})
+                    emitted = self._emit_reply(chunks, emitted, emit)
             response = self._finish(chunks)
 
     async def aclose(self):
