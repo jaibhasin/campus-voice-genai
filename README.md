@@ -72,9 +72,10 @@ Normal LLM uses the same `openai/gpt-6-luna` model through OpenRouter to choose 
 Greetings and clarifications can use one model call.
 Factual questions normally use two calls to Luna: select sources, then answer using their actual text.
 The first call sees a cached catalog and can select up to six source nodes across three branches at any depth, without opening every parent separately.
-The tool schema has one shared `source_ids` list capped at six and a `branch_ids` list capped at three, matching backend validation.
+The strict tool schema has one shared `source_ids` list capped at six, containing only actual unread source IDs.
+The backend derives document branches from those sources, reads at most three documents per batch, and reports extra-document sources as omitted.
 If evidence is missing, one further batch is allowed before a final Luna call forced to `reply`.
-Source IDs, ancestry, and duplicate reads are validated before the entire batch executes.
+Source IDs and prior reads are validated before the entire batch executes, and duplicate IDs within a batch are read once.
 Whole source chunks are retained under a shared evidence allowance; omitted chunks are reported to the model as incomplete evidence.
 Query arguments and prose accompanying tool calls are never sent to TTS.
 Luna must choose exactly one tool per response, with parallel tool calls disabled and strict schemas enabled.
