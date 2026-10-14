@@ -33,6 +33,7 @@ async def run_voice_session(
 ):
     """Retain the current response until an overlapping utterance takes a turn."""
     enabled = os.getenv("VOICE_INTERRUPTION_ENABLED", "false").lower() in {"true", "1", "yes"}
+    speculative_pause = os.getenv("VOICE_INTERRUPTION_SPECULATIVE_PAUSE", "false").lower() in {"true", "1", "yes"}
     grace = configured_ms("VOICE_INTERRUPTION_GRACE_MS", 350, minimum=0, maximum=2000)
     timeout = configured_ms("VOICE_INTERRUPTION_TIMEOUT_MS", 4000, maximum=5000)
     transcript_timeout = configured_ms("VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS", 1500, maximum=5000)
@@ -114,7 +115,8 @@ async def run_voice_session(
         await asyncio.sleep(grace)
         if uid != utterance_id or not owns(owner):
             return
-        if activity.user_speaking or activity.interruption_pending or activity.awaiting_transcript:
+        # A completed acknowledgment keeps playing while classification finishes.
+        if activity.user_speaking:
             owner.playable.clear()
             activity.playback_paused = True
             activity.touch()
@@ -249,7 +251,6 @@ async def run_voice_session(
             "recent_history": list(recent_history),
             "last_user_text": last_user_text,
             "overlap": True,
-            "answer_requested": "?" in owner.generated_text or "？" in owner.generated_text,
             "thread_id": thread_id,
         }
         try:
@@ -291,14 +292,10 @@ async def run_voice_session(
             decision_task = launch(classify_utterance(
                 utterance_id, owner, text, detected_language, detected_confidence,
             ))
-            # A final without VAD still gets a bounded pause if the decision is slow.
-            if grace_task is None or grace_task.done():
-                schedule_grace(utterance_id)
         else:
             await accept_turn(text, detected_language, detected_confidence)
 
     async def transcript_watchdog(uid):
-        nonlocal utterance_open, overlap_response_id
         await asyncio.sleep(transcript_timeout)
         if uid != utterance_id or activity.user_speaking:
             return
@@ -307,8 +304,7 @@ async def run_voice_session(
             # A newer empty utterance cannot erase an earlier pending question.
             await decide_pending()
         else:
-            utterance_open = False
-            overlap_response_id = None
+            # Keep the VAD overlap so a delayed final remains owned by its utterance.
             stop_task(grace_task)
             await resume(uid)
 
@@ -337,11 +333,15 @@ async def run_voice_session(
                     activity.user_speaking = True
                     activity.awaiting_transcript = False
                     audible = activity.playback_active or activity.playback_paused
+                    if not fragments:
+                        overlap_response_id = None
                     if response and owns(response) and audible:
                         overlap_response_id = response.response_id
                     if enabled and overlap_response_id is not None:
                         activity.interruption_pending = True
-                        schedule_grace(utterance_id)
+                        # Preserve playback until Jev decides unless explicitly opted in.
+                        if speculative_pause:
+                            schedule_grace(utterance_id)
                     await emit("vad_speech_start", response, utterance_id=utterance_id)
                     if not enabled:
                         await cancel_response()
@@ -373,8 +373,6 @@ async def run_voice_session(
                         ):
                             overlap_response_id = response.response_id
                         utterance_open = True
-                        if enabled and overlap_response_id is not None:
-                            schedule_grace(utterance_id)
                     fragments.append(transcript)
                     detected_language = getattr(event, "language", None)
                     detected_confidence = getattr(event, "language_confidence", None)

@@ -1,6 +1,7 @@
 """Direct, validated multi-path reads from the local PageIndex corpus."""
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 
 from langsmith import traceable
@@ -9,29 +10,24 @@ from pydantic import BaseModel, ConfigDict, Field
 from .decision_tracing import _trace_inputs
 
 
-class SourcePath(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    branch_id: str
-    source_ids: list[str] = Field(min_length=1, max_length=6)
-
-
 class PageIndexRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    paths: list[SourcePath] = Field(min_length=1, max_length=3)
+    source_ids: list[str] = Field(min_length=1, max_length=6)
 
 
 PAGEINDEX_TOOL = {
     "type": "function",
     "function": {
         "name": "read_pageindex",
+        "strict": True,
         "description": (
             "Read actual college source text before stating TIET facts. Select source IDs "
-            "directly from any tree depth under up to three catalog branch IDs in ONE "
-            "request. Each branch must be an outline ancestor of its sources. Select at "
-            "most six distinct sources total, covering relevant conditions and exceptions. "
-            "You may select several sources per branch. Catalog titles and summaries are "
+            "directly from any tree depth in ONE request. Put ALL selected sources in "
+            "ONE source_ids list of at most six distinct IDs TOTAL, covering relevant "
+            "conditions and exceptions. The server derives their document branches and "
+            "reads at most three documents per batch; extra documents are reported as "
+            "omitted. Prefer overview sources covering the whole question. Catalog titles and summaries are "
             "navigation hints, not factual evidence. Do not fetch already-read sources."
         ),
         "parameters": PageIndexRequest.model_json_schema(),
@@ -47,6 +43,7 @@ def compact_json(value):
 class BatchRead:
     evidence: list[dict]
     omitted: list[str]
+    branch_ids: list[str]
 
 
 class BatchPageIndex:
@@ -75,36 +72,49 @@ class BatchPageIndex:
         self.catalog_bytes = len(self.catalog.encode("utf-8"))
         if self.catalog_bytes > catalog_limit:
             raise ValueError("PageIndex catalog exceeds the normal LLM catalog limit")
+        self.source_ids = tuple(key for key, target in store.targets.items() if target.kind == "source")
+        self.source_roots = {
+            key: min(
+                (ancestor for ancestor in self.ancestors[key] if store.targets[ancestor].document == store.targets[key].document),
+                key=lambda ancestor: len(self.ancestors[ancestor]),
+            ) for key in self.source_ids
+        }
+
+    def tool_for(self, seen):
+        """Constrain model choices without sharing mutable schemas across turns."""
+        tool = deepcopy(PAGEINDEX_TOOL)
+        properties = tool["function"]["parameters"]["properties"]
+        properties["source_ids"]["items"]["enum"] = [key for key in self.source_ids if key not in seen]
+        return tool
 
     @traceable(name="read_pageindex", run_type="tool", process_inputs=_trace_inputs)
-    def read(self, paths, seen, byte_budget):
-        request = PageIndexRequest.model_validate({"paths": paths})
-        ids = [source for path in request.paths for source in path.source_ids]
-        if len(ids) > 6 or len(ids) != len(set(ids)):
-            raise ValueError("Select at most six distinct PageIndex sources")
-        for path in request.paths:
-            branch = self.store.targets.get(path.branch_id)
-            if branch is None or branch.kind != "outline":
-                raise ValueError("PageIndex branch must be a catalog outline")
-            for source_id in path.source_ids:
-                source = self.store.targets.get(source_id)
-                if (
-                    source is None or source.kind != "source"
-                    or path.branch_id not in self.ancestors[source_id]
-                    or source_id in seen
-                ):
-                    raise ValueError("PageIndex source must be unread and belong to its branch")
+    def read(self, selection, seen, byte_budget):
+        request = PageIndexRequest.model_validate(selection)
+        ids = list(dict.fromkeys(request.source_ids))
+        for source_id in ids:
+            source = self.store.targets.get(source_id)
+            if source is None or source.kind != "source" or source_id in seen:
+                raise ValueError("PageIndex source must name actual unread source text")
+        paths, omitted = {}, []
+        for source_id in ids:
+            branch_id = self.source_roots[source_id]
+            if branch_id not in paths:
+                if len(paths) == 3:
+                    omitted.append(source_id)
+                    continue
+                paths[branch_id] = []
+            paths[branch_id].append(source_id)
         # Give each selected branch a chance before taking a second source from one.
         ordered = [
-            path.source_ids[index]
-            for index in range(max(len(path.source_ids) for path in request.paths))
-            for path in request.paths if index < len(path.source_ids)
+            sources[index]
+            for index in range(max(len(sources) for sources in paths.values()))
+            for sources in paths.values() if index < len(sources)
         ]
-        evidence, omitted = [], []
+        evidence = []
         for source_id in ordered:
             source = self.store.targets[source_id].evidence()
             if len(compact_json([*evidence, source]).encode("utf-8")) > byte_budget:
                 omitted.append(source_id)
                 continue
             evidence.append(source)
-        return BatchRead(evidence, omitted)
+        return BatchRead(evidence, omitted, list(dict.fromkeys(self.source_roots[source["source_id"]] for source in evidence)))
