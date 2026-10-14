@@ -15,7 +15,7 @@ from sarvamai.types.realtime_end import RealtimeEnd
 from backend.voice_activity import CHECK_INS, VoiceActivity
 from backend.voice_interruption import VoiceInterruptionClassifier
 from backend.voice_language import VoiceLanguage
-from backend.voice_response import PROTOCOL_VERSION, VoiceResponse, pcm16_to_wav, synthesize_response
+from backend.voice_response import PROTOCOL_VERSION, VoiceResponse, synthesize_response
 
 
 sarvam_client = AsyncSarvamAI(api_subscription_key=os.getenv("SARVAM_API_KEY", ""))
@@ -114,7 +114,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
         await asyncio.sleep(grace)
         if uid != utterance_id or not owns(owner):
             return
-        if activity.user_speaking or activity.interruption_pending or activity.awaiting_transcript:
+        # Only sustained caller speech pauses speculatively. A completed short
+        # utterance keeps playing while STT and the classifier finish.
+        if activity.user_speaking:
             owner.playable.clear()
             activity.playback_paused = True
             activity.touch()
@@ -245,7 +247,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             "recent_history": list(recent_history),
             "last_user_text": last_user_text,
             "overlap": True,
-            "answer_requested": "?" in owner.generated_text or "？" in owner.generated_text,
             "thread_id": thread_id,
         }
         try:
@@ -286,14 +287,10 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             decision_task = launch(classify_utterance(
                 utterance_id, owner, text, detected_language, detected_confidence,
             ))
-            # A final without VAD still gets a bounded pause if the decision is slow.
-            if grace_task is None or grace_task.done():
-                schedule_grace(utterance_id)
         else:
             await accept_turn(text, detected_language, detected_confidence)
 
     async def transcript_watchdog(uid):
-        nonlocal utterance_open, overlap_response_id
         await asyncio.sleep(transcript_timeout)
         if uid != utterance_id or activity.user_speaking:
             return
@@ -302,8 +299,8 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             # A newer empty utterance cannot erase an earlier pending question.
             await decide_pending()
         else:
-            utterance_open = False
-            overlap_response_id = None
+            # Recover playback, but keep the VAD overlap until a final arrives.
+            # A slow transcript still belongs to the speech that interrupted it.
             stop_task(grace_task)
             await resume(uid)
 
@@ -332,6 +329,8 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                     activity.user_speaking = True
                     activity.awaiting_transcript = False
                     audible = activity.playback_active or activity.playback_paused
+                    if not fragments:
+                        overlap_response_id = None
                     if response and owns(response) and audible:
                         overlap_response_id = response.response_id
                     if enabled and overlap_response_id is not None:
@@ -368,8 +367,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                         ):
                             overlap_response_id = response.response_id
                         utterance_open = True
-                        if enabled and overlap_response_id is not None:
-                            schedule_grace(utterance_id)
                     fragments.append(transcript)
                     detected_language = getattr(event, "language", None)
                     detected_confidence = getattr(event, "language_confidence", None)

@@ -27,10 +27,13 @@ ACTION_QUESTION = {
         "requesting a stop, or answering a question. When `answer_requested` is true, "
         "treat yes, no, okay, and other short replies as answers to the assistant's "
         "question, not passive acknowledgments. Those substantive responses take a turn, "
-        "including one-word answers. If ambiguous, choose uncertain."
+        "including one-word answers. When `answer_requested` is null, infer intent "
+        "from the conversation. Generated assistant text may include quoted or "
+        "rhetorical questions and follow-ups not yet spoken; a question mark alone "
+        "does not mean the caller is answering a question. If ambiguous, choose uncertain."
     ),
     "criteria": {
-        "acknowledgment": "Clearly passive listening acknowledgment; no request or answer, and answer_requested is false.",
+        "acknowledgment": "Clearly passive listening acknowledgment; no request or answer.",
         "take_turn": "Question, correction, rejection, confusion, stop request, or answer, including yes/no/okay when answer_requested is true.",
         "uncertain": "Context does not establish a clearly passive acknowledgment.",
     },
@@ -118,6 +121,7 @@ class VoiceInterruptionClassifier:
             elif isinstance(item, str):
                 history.append(_short(item, MAX_HISTORY_ITEM_BYTES))
 
+        answer_requested = context.get("answer_requested")
         state = {
             "utterance": text.strip(),
             "language": _short(language or "", 40) or None,
@@ -129,7 +133,7 @@ class VoiceInterruptionClassifier:
             ),
             "last_user_text": _short(context.get("last_user_text", ""), MAX_LAST_USER_BYTES),
             "recent_history": history,
-            "answer_requested": bool(context.get("answer_requested", False)),
+            "answer_requested": answer_requested if type(answer_requested) is bool else None,
         }
         # Never truncate the completed utterance. If the fixed fields plus it exceed
         # the budget, fail open to accepting the caller's turn.

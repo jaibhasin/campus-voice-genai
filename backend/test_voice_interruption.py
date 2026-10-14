@@ -92,6 +92,7 @@ class VoiceInterruptionTests(unittest.IsolatedAsyncioTestCase):
                 phrase, {"overlap": True}
             )
             client.adecide.assert_awaited_once()
+            self.assertIsNone(client.adecide.await_args.args[0]["answer_requested"])
             self.assertEqual(decision.choice, "take_turn")
 
     async def test_acknowledgment_cannot_swallow_answer_to_assistant_question(self):
