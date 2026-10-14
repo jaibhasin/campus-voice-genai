@@ -25,7 +25,7 @@ class TwilioSettings:
     phone_number: str = field(default="", repr=False)
     allowed_phone_number: str = field(default="", repr=False)
     public_base_url: str = ""
-    retrieval_provider: str = "decisions"
+    retrieval_provider: str = "llm_batch"
     max_concurrent_calls: int = 1
     max_call_seconds: int = 600
 
@@ -38,7 +38,7 @@ class TwilioSettings:
             phone_number=os.getenv("TWILIO_PHONE_NUMBER", "").strip(),
             allowed_phone_number=os.getenv("TWILIO_ALLOWED_PHONE_NUMBER", "").strip(),
             public_base_url=os.getenv("TWILIO_PUBLIC_BASE_URL", "").strip().rstrip("/"),
-            retrieval_provider=os.getenv("TWILIO_RETRIEVAL_PROVIDER", "decisions"),
+            retrieval_provider=os.getenv("TWILIO_RETRIEVAL_PROVIDER", "llm_batch"),
             max_concurrent_calls=int(os.getenv("TWILIO_MAX_CONCURRENT_CALLS", "1")),
             max_call_seconds=int(os.getenv("TWILIO_MAX_CALL_SECONDS", "600")),
         )

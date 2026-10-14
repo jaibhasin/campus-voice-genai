@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import threading
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
@@ -47,6 +48,9 @@ def stream_start(call):
 class TwilioAdmissionTests(unittest.TestCase):
     def test_only_valid_server_configuration_is_accepted(self):
         SETTINGS.validate()
+        self.assertEqual(SETTINGS.retrieval_provider, "llm_batch")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(TwilioSettings.from_env().retrieval_provider, "llm_batch")
         for update in [{"public_base_url": "http://scout.example.com"},
                        {"public_base_url": "https://scout.example.com/query?secret=x"},
                        {"phone_number": "+919999999999"}, {"max_call_seconds": 0},
@@ -322,18 +326,32 @@ class TwilioRouteTests(unittest.TestCase):
         service = runtime.sarvam.speech_to_text_realtime_streaming
         service.connect = Mock(wraps=service.connect)
         queries = []
+        heard_first_sentence = threading.Event()
+        answer_completed = threading.Event()
 
         async def answer(text, **kwargs):
             queries.append((text, kwargs))
-            yield {"type": "token", "content": "The grounded answer."}
+            yield {"type": "tool_call", "name": "read_source", "args": "{source_id: private-tool-args}"}
+            yield {"type": "token", "content": "The grounded answer. "}
+            if not await asyncio.to_thread(heard_first_sentence.wait, 2):
+                raise AssertionError("Phone audio waited for the complete answer")
+            answer_completed.set()
             yield {"type": "done"}
 
         self.agent.astream = answer
 
-        async def flush():
+        async def audio():
             await tts.events.put(AudioOutput(data=AudioOutputData(
                 content_type="audio/mulaw", audio=base64.b64encode(b"\xff" * 160).decode(),
             )))
+
+        async def convert(_text):
+            if queries:
+                await audio()
+
+        async def flush():
+            if not queries:
+                await audio()
             await tts.events.put(EventResponse(data=EventResponseData(event_type="final")))
 
         async def transcribe(_audio):
@@ -341,6 +359,7 @@ class TwilioRouteTests(unittest.TestCase):
                 "text": "What are the hostel fees?", "language": "en-IN", "language_confidence": 0.99,
             })())
 
+        tts.convert.side_effect = convert
         tts.flush.side_effect = flush
         stt.send_realtime_audio_input.side_effect = transcribe
         self.post("/api/telephony/voice", call_params())
@@ -356,6 +375,9 @@ class TwilioRouteTests(unittest.TestCase):
                 marks = 0
                 while marks < 2:
                     packet = ws.receive_json()
+                    if turn == 1 and packet["event"] == "media":
+                        self.assertFalse(answer_completed.is_set())
+                        heard_first_sentence.set()
                     if packet["event"] == "mark":
                         marks += 1
                         sequence += 1
@@ -369,6 +391,11 @@ class TwilioRouteTests(unittest.TestCase):
                           "stop": {"accountSid": SETTINGS.account_sid, "callSid": CALL}})
             ws.receive()  # Wait for server close and lifecycle cleanup.
         self.assertEqual(queries[0][0], "What are the hostel fees?")
+        self.assertTrue(heard_first_sentence.is_set())
+        self.assertTrue(answer_completed.is_set())
+        self.assertEqual(queries[0][1]["config"]["configurable"]["retrieval_provider"], "llm_batch")
+        self.assertEqual(tts.convert.await_args_list[-1].args[0], "The grounded answer.")
+        self.assertFalse(any("private-tool-args" in call.args[0] for call in tts.convert.await_args_list))
         self.assertEqual(queries[0][1]["config"]["configurable"]["thread_id"], "phone:" + CALL)
         self.agent.forget_thread.assert_awaited_once_with("phone:" + CALL)
         self.assertTrue(admission.stop.is_set())

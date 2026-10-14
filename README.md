@@ -49,6 +49,8 @@ For calls to India, use a non-Indian Twilio caller number and enable India in Vo
 Add the `TWILIO_*` values from `.env.example` to your ignored local `.env`.
 Use E.164 numbers for `TWILIO_PHONE_NUMBER` and `TWILIO_ALLOWED_PHONE_NUMBER`, and set `TWILIO_ENABLED=true` once they are configured.
 Only the configured mobile can call Scout or receive an outbound call.
+Phone calls default to Normal LLM (GPT-6 Luna), with validated PageIndex batches and spoken replies streamed sentence by sentence.
+Set `TWILIO_RETRIEVAL_PROVIDER=decisions` or `jev` to choose another provider.
 Set `VOICE_INTERRUPTION_ENABLED=true` to enable contextual acknowledgments and interruptions on phone calls as well as browser calls.
 
 Start the backend with one worker and without auto-reload:
