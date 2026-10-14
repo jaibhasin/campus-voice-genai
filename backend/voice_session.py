@@ -421,6 +421,7 @@ async def run_voice_session(
                     language_code="auto", model="saaras:v3-realtime", stream_type="fast",
                     mode="transcribe", encoding=transport.audio_format.encoding,
                     sample_rate=str(transport.audio_format.sample_rate), endpointing="vad",
+                    silence_duration_ms="500",
                 )
                 stt_ws = await asyncio.wait_for(stt_connection.__aenter__(), timeout=15)
                 break
@@ -447,9 +448,9 @@ async def run_voice_session(
             if message.kind == "disconnect":
                 break
             if message.kind == "audio":
-                await stt_ws.send_realtime_audio_input(RealtimeAudioInput(
+                await asyncio.wait_for(stt_ws.send_realtime_audio_input(RealtimeAudioInput(
                     audio=base64.b64encode(message.audio).decode("utf-8"),
-                ))
+                )), timeout=5)
             elif message.kind == "control":
                 data = message.data
                 kind = data.get("type")
