@@ -33,6 +33,7 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
     """Retain the current response until an overlapping utterance takes a turn."""
     await websocket.accept()
     enabled = os.getenv("VOICE_INTERRUPTION_ENABLED", "false").lower() in {"true", "1", "yes"}
+    speculative_pause = os.getenv("VOICE_INTERRUPTION_SPECULATIVE_PAUSE", "false").lower() in {"true", "1", "yes"}
     grace = configured_ms("VOICE_INTERRUPTION_GRACE_MS", 350, minimum=0, maximum=2000)
     timeout = configured_ms("VOICE_INTERRUPTION_TIMEOUT_MS", 4000, maximum=5000)
     transcript_timeout = configured_ms("VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS", 1500, maximum=5000)
@@ -114,7 +115,9 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
         await asyncio.sleep(grace)
         if uid != utterance_id or not owns(owner):
             return
-        if activity.user_speaking or activity.interruption_pending or activity.awaiting_transcript:
+        # Only sustained caller speech pauses speculatively. A completed short
+        # utterance keeps playing while STT and the classifier finish.
+        if activity.user_speaking:
             owner.playable.clear()
             activity.playback_paused = True
             activity.touch()
@@ -285,9 +288,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
             decision_task = launch(classify_utterance(
                 utterance_id, owner, text, detected_language, detected_confidence,
             ))
-            # A final without VAD still gets a bounded pause if the decision is slow.
-            if grace_task is None or grace_task.done():
-                schedule_grace(utterance_id)
         else:
             await accept_turn(text, detected_language, detected_confidence)
 
@@ -336,7 +336,10 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                         overlap_response_id = response.response_id
                     if enabled and overlap_response_id is not None:
                         activity.interruption_pending = True
-                        schedule_grace(utterance_id)
+                        # VAD duration cannot distinguish acknowledgments from turns.
+                        # Preserve speech until Jev decides unless explicitly opted in.
+                        if speculative_pause:
+                            schedule_grace(utterance_id)
                     await emit("vad_speech_start", response, utterance_id=utterance_id)
                     if not enabled:
                         await cancel_response()
@@ -368,8 +371,6 @@ async def voice_pipeline(websocket: WebSocket, voice_agent, retrieval_provider="
                         ):
                             overlap_response_id = response.response_id
                         utterance_open = True
-                        if enabled and overlap_response_id is not None:
-                            schedule_grace(utterance_id)
                     fragments.append(transcript)
                     detected_language = getattr(event, "language", None)
                     detected_confidence = getattr(event, "language_confidence", None)

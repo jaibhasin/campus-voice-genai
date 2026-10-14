@@ -121,6 +121,7 @@ class VoiceInterruptionClassifier:
             elif isinstance(item, str):
                 history.append(_short(item, MAX_HISTORY_ITEM_BYTES))
 
+        answer_requested = context.get("answer_requested")
         state = {
             "utterance": text.strip(),
             "language": _short(language or "", 40) or None,
@@ -132,7 +133,7 @@ class VoiceInterruptionClassifier:
             ),
             "last_user_text": _short(context.get("last_user_text", ""), MAX_LAST_USER_BYTES),
             "recent_history": history,
-            "answer_requested": context.get("answer_requested") if type(context.get("answer_requested")) is bool else None,
+            "answer_requested": answer_requested if type(answer_requested) is bool else None,
         }
         # Never truncate the completed utterance. If the fixed fields plus it exceed
         # the budget, fail open to accepting the caller's turn.

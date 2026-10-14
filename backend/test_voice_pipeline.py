@@ -17,7 +17,7 @@ from sarvamai.types.realtime_error import RealtimeError
 
 from backend import voice_pipeline as voice_pipeline_module
 from backend.voice_activity import CHECK_INS, VoiceActivity
-from backend.voice_interruption import InterruptionDecision
+from backend.voice_interruption import InterruptionDecision, VoiceInterruptionClassifier
 from backend.voice_response import VoiceResponse
 
 
@@ -577,6 +577,7 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(voice_pipeline_module, "VoiceInterruptionClassifier", return_value=self.classifier),
             patch.dict(os.environ, {
                 "VOICE_INTERRUPTION_ENABLED": "true", "VOICE_INTERRUPTION_GRACE_MS": "10",
+                "VOICE_INTERRUPTION_SPECULATIVE_PAUSE": "true",
                 "VOICE_INTERRUPTION_TIMEOUT_MS": "100", "VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS": "20",
             }),
         ]
@@ -650,6 +651,105 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
         context = self.classifier.classify.await_args.args[1]
         self.assertIsNone(context.get("answer_requested"))
         self.assertEqual(context["assistant_text"], self.agent.text)
+
+    async def test_generated_follow_up_does_not_override_classifier_acknowledgment(self):
+        client = AsyncMock()
+        client.adecide.return_value = {
+            "answers": {"action": {"type": "choice", "choice": "acknowledgment"}},
+        }
+        classifier = VoiceInterruptionClassifier(client=client)
+        self.classifier.classify = AsyncMock(wraps=classifier.classify)
+        self.agent.text = "Scholarships cover tuition. Which programme are you interested in?"
+        await self.start()
+        await self.utterance("Ok.")
+        await self.browser.event("acknowledgment", 1)
+        self.assertIsNone(client.adecide.await_args.args[0]["answer_requested"])
+        self.assertEqual(len(self.agent.calls), 1)
+        self.assertFalse(any(event["type"] == "response_cancelled" for event in self.browser.sent_json))
+
+    async def test_new_speech_after_empty_watchdog_clears_old_overlap(self):
+        await self.start()
+        await self.stt.event("RealtimeVadSpeechStart")
+        await self.browser.event("playback_pause", 1)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.browser.event("playback_resume", 1)
+        await self.browser.command("playback_done", response_id=1)
+        await self.browser_barrier()
+        await self.utterance("What are the admissions dates?")
+        await self.browser.event("tts_done", 2)
+        self.classifier.classify.assert_not_awaited()
+        self.assertEqual(self.agent.calls[-1][0], "What are the admissions dates?")
+
+    async def test_short_acknowledgments_keep_playing_during_slow_classification(self):
+        requested = asyncio.Event()
+        release = asyncio.Event()
+
+        async def classify(*args, **kwargs):
+            requested.set()
+            await release.wait()
+            return InterruptionDecision("acknowledgment", None, 1)
+
+        self.classifier.classify.side_effect = classify
+        await self.start()
+        for index, (text, detected, vad) in enumerate([
+            ("okay", "en-IN", True), ("ठीक है", "hi-IN", True), ("hmm", "en-IN", False),
+        ], 1):
+            requested.clear()
+            release.clear()
+            if vad:
+                await self.utterance(text, detected)
+            else:
+                await self.stt.event("RealtimeTranscriptFinal", text, detected)
+            await asyncio.wait_for(requested.wait(), 1)
+            await asyncio.sleep(0.04)  # Past both the grace and transcript deadlines.
+            release.set()
+            await self.browser.event("acknowledgment", 1, count=index)
+        self.assertFalse(any(event["type"] == "playback_pause" for event in self.browser.sent_json))
+        self.assertEqual(len(self.agent.calls), 1)
+        self.assertEqual(self.classifier.classify.await_count, 3)
+
+    async def test_default_keeps_long_acknowledgment_playing_until_decision(self):
+        os.environ.pop("VOICE_INTERRUPTION_SPECULATIVE_PAUSE", None)
+        requested = asyncio.Event()
+        release = asyncio.Event()
+
+        async def classify(*args, **kwargs):
+            requested.set()
+            await release.wait()
+            return InterruptionDecision("acknowledgment", None, 1)
+
+        self.classifier.classify.side_effect = classify
+        await self.start()
+        await self.stt.event("RealtimeVadSpeechStart")
+        await self.browser.event("vad_speech_start")
+        await asyncio.sleep(0.04)  # Sustained VAD exceeds the configured grace.
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.stt.event("RealtimeTranscriptFinal", "okay, yes, I am listening")
+        await asyncio.wait_for(requested.wait(), 1)
+        await asyncio.sleep(0.04)
+        self.assertFalse(any(event["type"] == "playback_pause" for event in self.browser.sent_json))
+        release.set()
+        await self.browser.event("acknowledgment", 1)
+        self.assertEqual(len(self.agent.calls), 1)
+
+    async def test_no_speculative_pause_handles_noise_then_confirmed_interruption(self):
+        os.environ["VOICE_INTERRUPTION_SPECULATIVE_PAUSE"] = "false"
+        self.classifier.classify.return_value = InterruptionDecision("take_turn", None, 1)
+        await self.start()
+        await self.stt.event("RealtimeVadSpeechStart")
+        await self.browser.event("vad_speech_start")
+        await asyncio.sleep(0.04)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await asyncio.sleep(0.04)  # Empty speech-end watchdog must preserve playback.
+        await self.browser_barrier()
+        self.classifier.classify.assert_not_awaited()
+        self.assertFalse(any(event["type"] in {"playback_pause", "response_cancelled"}
+                             for event in self.browser.sent_json))
+        await self.utterance("no")
+        await self.browser.event("tts_done", 2)
+        self.classifier.classify.assert_awaited_once()
+        self.assertIn({"type": "response_cancelled", "response_id": 1}, self.browser.sent_json)
+        self.assertEqual(self.agent.calls[-1][0], "no")
 
     async def test_late_acknowledgment_retains_overlap_after_watchdog_and_playback_end(self):
         await self.start()
@@ -799,7 +899,6 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
         self.classifier.classify.side_effect = blocked
         await self.utterance("no")
-        await self.browser.event("playback_pause", 1)
         await self.browser.event("tts_done", 2)
         self.classifier.classify.side_effect = RuntimeError("provider unavailable")
         await self.utterance("what?")
@@ -815,9 +914,11 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
             return InterruptionDecision("acknowledgment", None, 1)
         self.classifier.classify.side_effect = classify
         await self.start()
-        await self.utterance("okay")
-        await asyncio.wait_for(requested.wait(), 1)
+        await self.stt.event("RealtimeVadSpeechStart")
         await self.browser.event("playback_pause", 1)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.stt.event("RealtimeTranscriptFinal", "okay")
+        await asyncio.wait_for(requested.wait(), 1)
         release.set()
         await self.browser.event("playback_resume", 1)
         self.assertEqual(len(self.agent.calls), 1)
@@ -841,8 +942,11 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
                 cancelled.set()
         self.classifier.classify.side_effect = classify
         await self.start()
-        await self.utterance("okay")
+        await self.stt.event("RealtimeVadSpeechStart")
         await self.browser.event("playback_pause", 1)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.stt.event("RealtimeTranscriptFinal", "okay")
+        await self.browser.event("interruption_pending", 1)
         await self.browser.command("end_call")
         await asyncio.wait_for(self.task, 1)
         self.assertTrue(cancelled.is_set())
@@ -886,9 +990,11 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
             return InterruptionDecision("take_turn", None, 1)
         self.classifier.classify.side_effect = classify
         await self.start()
-        await self.utterance("okay")
-        await asyncio.wait_for(requested.wait(), 1)
+        await self.stt.event("RealtimeVadSpeechStart")
         await self.browser.event("playback_pause", 1)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.stt.event("RealtimeTranscriptFinal", "okay")
+        await asyncio.wait_for(requested.wait(), 1)
         await self.utterance("but electricity?")
         await self.browser.event("tts_done", 2)
         release.set()

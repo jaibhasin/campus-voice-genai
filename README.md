@@ -45,12 +45,19 @@ Scout continues the same answer for clear listening acknowledgments and gives th
 Short inputs such as "no" and "what" are sent to Jev with conversation context.
 Uncertain decisions and provider failures give the caller the floor.
 
-Playback continues for a configurable grace period before temporarily pausing while speech or classification remains pending.
-An acknowledgment resumes the retained audio without restarting the answer, and microphone capture continues during a pause.
+Playback continues during overlapping speech, transcription, and classification until Jev accepts a caller turn.
+VAD duration alone does not pause playback, so a sustained acknowledgment can preserve the answer without a gap.
+Set `VOICE_INTERRUPTION_SPECULATIVE_PAUSE=true` to temporarily pause sustained caller speech after the grace period, retaining the remaining audio.
+With that option enabled, an acknowledgment resumes the retained audio without restarting the answer, and microphone capture continues during a pause.
+The default avoids speculative pauses, but Scout continues speaking while transcription and classification decide whether the caller wants a turn.
 Canceled responses cannot send their remaining audio into a new response.
+Jev infers whether the caller is answering a question from conversational context; question marks in generated text do not force a new turn.
 
-`VOICE_INTERRUPTION_GRACE_MS` defaults to 350 and `VOICE_INTERRUPTION_TIMEOUT_MS` defaults to 4000.
+`VOICE_INTERRUPTION_SPECULATIVE_PAUSE` defaults to false.
+`VOICE_INTERRUPTION_GRACE_MS` defaults to 350 and applies only when speculative pauses are enabled.
+`VOICE_INTERRUPTION_TIMEOUT_MS` defaults to 4000.
 `VOICE_INTERRUPTION_TRANSCRIPT_TIMEOUT_MS` defaults to 1500 and recovers when speech ends without a transcript.
+Recovery retains the original speech overlap so a delayed acknowledgment is still classified against the same response.
 The feature defaults off for controlled enablement.
 Deploy the frontend and backend together because voice calls require protocol version 2.
 
