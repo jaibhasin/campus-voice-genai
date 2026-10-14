@@ -9,7 +9,6 @@ from langsmith import get_current_run_tree, traceable
 
 from Agent.jev import JevClient
 
-
 CHOICES = {"acknowledgment", "take_turn", "uncertain"}
 MAX_REQUEST_BYTES = 12_000
 MAX_UTTERANCE_BYTES = 2_000
@@ -189,13 +188,13 @@ class VoiceInterruptionClassifier:
             )
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return fallback("timeout")
         except RuntimeError as error:
             return fallback("missing_credentials" if "Missing TYPESAFE_API_KEY" in str(error) else "request_error")
         except (KeyError, TypeError, ValueError, AttributeError):
             return fallback("invalid_output")
-        except Exception:
+        except Exception:  # noqa: BLE001 - Provider failures must yield the caller the floor.
             return fallback("request_error")
 
     async def aclose(self):

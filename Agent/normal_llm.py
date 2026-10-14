@@ -113,7 +113,7 @@ class NormalLLMAgent:
             return emitted
         text = arguments["text"]
         if not isinstance(text, str):
-            raise RuntimeError("Normal LLM reply text must be a string")
+            raise RuntimeError("Normal LLM reply text must be a string")  # noqa: TRY004 - Provider protocol failure.
         # JSON Unicode escapes can split a surrogate pair across provider chunks.
         if text and 0xD800 <= ord(text[-1]) <= 0xDBFF:
             text = text[:-1]

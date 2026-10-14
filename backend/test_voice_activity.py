@@ -13,7 +13,7 @@ class VoiceActivityTests(unittest.IsolatedAsyncioTestCase):
                 setattr(activity, flag, True)
                 attempts = []
 
-                async def wait(awaitable, timeout):
+                async def wait(awaitable, timeout, *, attempts=attempts, activity=activity, flag=flag):
                     awaitable.close()
                     attempts.append(timeout)
                     if len(attempts) == 1:
