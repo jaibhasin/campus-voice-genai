@@ -55,13 +55,20 @@ class LunaTransportFixture:
         case.assertEqual(reply.content, "Luna grounded answer.")
         case.assertEqual(len(result.evidence), 6)
         case.assertEqual(len(self.requests), 2)
-        for body in self.requests:
+        for index, body in enumerate(self.requests):
             case.assertEqual(body["model"], "openai/gpt-6-luna")
             case.assertEqual(body["reasoning_effort"], "none")
-            case.assertEqual(body["tools"][0]["function"]["name"], "read_pageindex")
-            case.assertEqual(body["tools"][1]["function"]["name"], "reply")
+            if index == 0:
+                case.assertEqual(body["tools"][0]["function"]["name"], "read_pageindex")
+                case.assertEqual(body["tools"][1]["function"]["name"], "reply")
+                case.assertEqual(body["tool_choice"], "required")
+                properties = body["tools"][0]["function"]["parameters"]["properties"]
+                case.assertEqual(set(properties), {"source_ids"})
+                case.assertEqual(set(properties["source_ids"]["items"]["enum"]), set(self.agent.index.source_ids))
+            else:
+                case.assertEqual([tool["function"]["name"] for tool in body["tools"]], ["reply"])
+                case.assertEqual(body["tool_choice"], {"type": "function", "function": {"name": "reply"}})
             case.assertTrue(all(tool["function"]["strict"] for tool in body["tools"]))
-            case.assertEqual(body["tool_choice"], "required")
             case.assertFalse(body["parallel_tool_calls"])
         tool = next(m for m in self.requests[1]["messages"] if m["role"] == "tool")
         case.assertEqual(tool["tool_call_id"], "batch-one")

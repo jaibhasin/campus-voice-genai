@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langsmith import traceable
 from pydantic import BaseModel, ConfigDict, Field
 
-from .batch_pageindex import PAGEINDEX_TOOL, BatchPageIndex, compact_json
+from .batch_pageindex import BatchPageIndex, compact_json
 from .languages import VOICE_LANGUAGES
 from .models import OpenRouterChatOpenAI
 from .retrieval import RetrievalResult
@@ -65,13 +65,6 @@ class NormalLLMAgent:
             max_tokens=response_tokens,
             timeout=self.timeout,
             max_retries=0,
-        )
-        tools = [PAGEINDEX_TOOL, REPLY_TOOL]
-        self.with_sources = self.model.bind_tools(
-            tools, tool_choice="required", parallel_tool_calls=False, strict=True,
-        )
-        self.reply_only = self.model.bind_tools(
-            tools, tool_choice="reply", parallel_tool_calls=False, strict=True,
         )
 
     def _messages(self, question, conversation, language, voice):
@@ -140,15 +133,21 @@ class NormalLLMAgent:
             remaining = self.max_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise TimeoutError("Normal LLM response exceeded its total deadline")
-            allow_tools = turn < 2 and len(compact_json(result.evidence).encode("utf-8")) < self.evidence_limit
+            allow_tools = (
+                turn < 2 and any(key not in seen for key in self.index.source_ids)
+                and len(compact_json(result.evidence).encode("utf-8")) < self.evidence_limit
+            )
+            tools = [REPLY_TOOL]
+            if allow_tools:
+                tools.insert(0, self.index.tool_for(seen))
             # Include tool schemas in the limit and retain whole source chunks.
             request_bytes = len(compact_json({
                 "messages": [message.model_dump() for message in messages],
-                "tools": [PAGEINDEX_TOOL, REPLY_TOOL],
+                "tools": tools,
             }).encode("utf-8"))
             if request_bytes > 160000:
                 raise ValueError("Normal LLM request exceeds its context allowance")
-            response = yield messages, allow_tools, min(self.timeout, remaining), turn
+            response = yield messages, allow_tools, min(self.timeout, remaining), turn, tools
             if not response.tool_calls:
                 result.stop_reason = result.stop_reason or "answered"
                 return response, result
@@ -171,12 +170,12 @@ class NormalLLMAgent:
                         })})
                     packet = {"sources": batch.evidence, "omitted_sources": batch.omitted}
                     if batch.omitted:
-                        result.limitation = "Some selected source chunks did not fit; evidence is incomplete."
+                        result.limitation = "Some selected source chunks exceeded this batch's document or evidence limits; evidence is incomplete."
                         packet["limitation"] = result.limitation
                     result.history.append({
                         "round": turn + 1, "action": "read_sources",
                         "source_ids": [source["source_id"] for source in batch.evidence],
-                        "branch_ids": call["args"]["branch_ids"], "omitted": batch.omitted,
+                        "branch_ids": batch.branch_ids, "omitted": batch.omitted,
                     })
                 except (ValueError, TypeError, AttributeError):
                     result.limitation = "The source request was invalid; no sources were read for that request."
@@ -197,11 +196,13 @@ class NormalLLMAgent:
         response = None
         while True:
             try:
-                messages, tools, timeout, turn = steps.send(response)
+                messages, can_read, timeout, turn, tools = steps.send(response)
             except StopIteration as done:
                 return done.value
             chunks, emitted, deadline = None, "", time.monotonic() + timeout
-            model = self.with_sources if tools else self.reply_only
+            model = self.model.bind_tools(
+                tools, tool_choice="required" if can_read else "reply", parallel_tool_calls=False, strict=True,
+            )
             for chunk in model.stream(messages, config=self._config(turn), timeout=timeout):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Normal LLM request exceeded its deadline")
@@ -215,11 +216,13 @@ class NormalLLMAgent:
         response = None
         while True:
             try:
-                messages, tools, timeout, turn = steps.send(response)
+                messages, can_read, timeout, turn, tools = steps.send(response)
             except StopIteration as done:
                 return done.value
             chunks, emitted = None, ""
-            model = self.with_sources if tools else self.reply_only
+            model = self.model.bind_tools(
+                tools, tool_choice="required" if can_read else "reply", parallel_tool_calls=False, strict=True,
+            )
             async with asyncio.timeout(timeout):
                 async for chunk in model.astream(messages, config=self._config(turn)):
                     chunks = chunk if chunks is None else chunks + chunk

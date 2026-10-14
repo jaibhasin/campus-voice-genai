@@ -40,7 +40,7 @@ class ScriptedModel:
 
         class Binding:
             def stream(self, messages, **kwargs):
-                parent.calls.append((list(messages), options))
+                parent.calls.append((list(messages), options, tools))
                 chunks = parent.script.pop(0)
                 if isinstance(chunks, Exception):
                     raise chunks
@@ -138,6 +138,9 @@ class NormalLLMTests(unittest.TestCase):
         self.assertEqual(len(model.calls), 3)
         self.assertEqual(len(result.evidence), 2)
         self.assertEqual(model.calls[-1][1]["tool_choice"], "reply")
+        next_schema = model.calls[1][2][0]["function"]["parameters"]["properties"]
+        self.assertNotIn(first[0]["source_ids"][0], next_schema["source_ids"]["items"]["enum"])
+        self.assertIn(second[0]["source_ids"][0], next_schema["source_ids"]["items"]["enum"])
         self.assertEqual([e["content"] for e in events if e["type"] == "token"], ["Complete answer."])
 
     def test_invalid_request_cannot_read_any_source(self):
