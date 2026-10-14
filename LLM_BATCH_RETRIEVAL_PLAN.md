@@ -10,10 +10,10 @@ One model can require multiple API calls because source text becomes available o
 ## Request flow
 
 1. Read the current question, bounded conversation context, and cached document catalog.
-2. Luna either writes a direct reply or calls `read_pageindex` with up to three branch IDs and six distinct source IDs.
+2. Luna chooses `reply` for speech or `read_pageindex` with up to three `branch_ids` and one shared list of at most six distinct `source_ids`.
 3. Validate the entire selection, then fetch source text locally without intermediate navigation calls.
 4. Luna reads the returned evidence and writes the reply, or requests one more batch for missing evidence.
-5. After two batches, the final Luna call has tools disabled and must explain any unresolved evidence gaps.
+5. After two batches, the final Luna call is forced to `reply` and must explain any unresolved evidence gaps.
 
 The typical factual flow uses two calls to Luna.
 The optional follow-up makes it three calls to the same model.
@@ -29,7 +29,8 @@ Section summaries and original-page hints assist navigation but are never treate
 Original pages remain available for tables, footnotes, and gaps in section text.
 
 Any outline ancestor can identify a selected branch.
-The reader checks every source's ancestry and requires that each reference names an unread source target.
+The reader checks every source's ancestry and requires that each reference names an unread source target under a selected branch.
+The schema caps the shared source list at six, so several branches cannot each independently request six sources.
 Unknown IDs, outline IDs passed as sources, cross-branch references, duplicates, and oversized selections fail validation before any source is read.
 The selection can span multiple sections of one document or branches in different documents.
 Per-turn evidence, seen-source IDs, history, and tool messages remain local to each request.
@@ -50,10 +51,12 @@ There are no hidden retries or calls to the existing answer model in this mode.
 Greetings, short utterances, clarifications, and factual routing are contextual model decisions rather than local keyword filters.
 Accepted voice language and concise spoken style apply to every call.
 
-Buffer text from tool-capable responses until the complete response establishes whether it is a query or a reply.
-Discard any preamble accompanying a tool call and never send tool arguments to chat or TTS.
-The final call with tools disabled can stream text directly.
-This buffering is deliberate and its effect on first spoken response latency must be included in live measurements.
+Every response chooses exactly one strict tool: `read_pageindex` or `reply`.
+The request requires a tool choice and disables parallel tool calls.
+The reply tool explicitly commits the model to user-facing text, allowing decoded `reply.text` to stream immediately without waiting for response completion.
+Discard ordinary content accompanying a tool call and never send source arguments or the reply JSON envelope to chat or TTS.
+Incomplete JSON escapes and split Unicode surrogate pairs wait until they can be decoded safely.
+The final call permits only `reply`, and the existing voice sender converts complete sentences while later words are still being generated.
 
 ## Graph and dropdown integration
 
@@ -86,11 +89,11 @@ The recent cold-tokenizer fix remains in place.
 LangSmith records `normal_llm_agent`, each `luna_agent` call, and `read_pageindex` spans beneath the existing chat or voice trace.
 Source provenance, selected branches, omitted chunks, request size, model usage, timing, and errors are observable without including client credentials.
 
-Focused local tests passed for deep-node selection, three-branch reads, whole-batch validation, source ancestry, evidence budgeting, one-call greetings, same-model factual responses, bounded follow-up reads, speech buffering, per-turn isolation, concurrent turns, deadlines, and cancellation.
+Focused local tests cover deep-node selection, three-branch reads, the shared six-source schema, whole-batch validation, source ancestry, evidence budgeting, one-call greetings, same-model factual responses, bounded follow-up reads, per-turn isolation, concurrent turns, deadlines, and cancellation.
+Streaming regressions verify early text delivery, split Unicode and JSON escapes, suppressed tool preambles, and first-sentence TTS conversion before model completion.
 Native SDK HTTP fixtures verified synchronous and asynchronous tool-call parsing, tool result linkage, usage reporting, and parented traces.
 Graph and endpoint checks verified provider selection, preserved context, voice language, and that the old answer model is not called for `llm_batch`.
 
-The live gateway capability probe passed.
+The live gateway accepted strict reply and source-selection schemas against synthetic documents, using one call for a greeting and two calls for a six-source answer.
 Full live calls against the actual PageIndex corpus, microphone input, browser playback, and comparative latency measurements remain unverified.
-Further testing was stopped at the user's request before PR creation.
 Evaluate warm and cold calls using the same corpus, question, conversation, and speech settings before claiming faster responses or promoting the default.

@@ -68,15 +68,18 @@ The voice WebSocket accepts the same values in its `retrieval_provider` query pa
 Unavailable providers report incomplete retrieval rather than silently switching providers.
 For standalone agents, `RETRIEVAL_MODE=jev` selects Jev and `RETRIEVAL_MODE=llm` keeps the original LLM tool-selection baseline.
 
-Normal LLM uses the same `openai/gpt-6-luna` model through OpenRouter to choose between a direct response and `read_pageindex` tool calls.
+Normal LLM uses the same `openai/gpt-6-luna` model through OpenRouter to choose between a streaming `reply` and a `read_pageindex` source batch.
 Greetings and clarifications can use one model call.
 Factual questions normally use two calls to Luna: select sources, then answer using their actual text.
 The first call sees a cached catalog and can select up to six source nodes across three branches at any depth, without opening every parent separately.
-If evidence is missing, one further batch is allowed before a final Luna reply with tools disabled.
+The tool schema has one shared `source_ids` list capped at six and a `branch_ids` list capped at three, matching backend validation.
+If evidence is missing, one further batch is allowed before a final Luna call forced to `reply`.
 Source IDs, ancestry, and duplicate reads are validated before the entire batch executes.
 Whole source chunks are retained under a shared evidence allowance; omitted chunks are reported to the model as incomplete evidence.
 Query arguments and prose accompanying tool calls are never sent to TTS.
-Tool-capable model text is buffered until the response is known to be a reply.
+Luna must choose exactly one tool per response, with parallel tool calls disabled and strict schemas enabled.
+Decoded `reply.text` streams into chat and the voice sentence queue as it arrives, including greetings and answers after the first source batch.
+TTS receives each complete sentence while Luna can continue generating later sentences.
 
 Use `RETRIEVAL_MODE=llm_batch` to make this mode the standalone agent default.
 `NORMAL_LLM_REQUEST_TIMEOUT`, `NORMAL_LLM_MAX_SECONDS`, and `NORMAL_LLM_EVIDENCE_BYTES` default to 15 seconds per model call, 45 seconds per turn, and 32,000 bytes of source evidence.
