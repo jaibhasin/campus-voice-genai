@@ -20,6 +20,7 @@ PAGEINDEX_TOOL = {
     "type": "function",
     "function": {
         "name": "read_pageindex",
+        "strict": True,
         "description": (
             "Read actual college source text before stating TIET facts. Select source IDs "
             "directly from any tree depth under up to three catalog branch IDs in ONE "

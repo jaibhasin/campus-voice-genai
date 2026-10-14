@@ -34,10 +34,16 @@ class LunaTransportFixture:
                 "function": {"name": "read_pageindex", "arguments": json.dumps(selection_for(paths_for(self.store)))},
             }]}
             finish = "tool_calls"
+            deltas = [delta]
         else:
-            delta, finish = {"content": "Luna grounded answer."}, "stop"
-        chunks = [
-            {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+            deltas = [{"tool_calls": [{
+                "id": "reply-one", "index": 0, "type": "function",
+                "function": {"name": "reply", "arguments": '{"text":"Luna grounded '},
+            }]}, {"tool_calls": [{
+                "index": 0, "function": {"arguments": 'answer."}'},
+            }]}]
+            finish = "tool_calls"
+        chunks = [{"choices": [{"index": 0, "delta": delta, "finish_reason": None}]} for delta in deltas] + [
             {"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
             {"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 20, "total_tokens": 220}},
         ]
@@ -53,10 +59,14 @@ class LunaTransportFixture:
             case.assertEqual(body["model"], "openai/gpt-6-luna")
             case.assertEqual(body["reasoning_effort"], "none")
             case.assertEqual(body["tools"][0]["function"]["name"], "read_pageindex")
+            case.assertEqual(body["tools"][1]["function"]["name"], "reply")
+            case.assertTrue(all(tool["function"]["strict"] for tool in body["tools"]))
+            case.assertEqual(body["tool_choice"], "required")
+            case.assertFalse(body["parallel_tool_calls"])
         tool = next(m for m in self.requests[1]["messages"] if m["role"] == "tool")
         case.assertEqual(tool["tool_call_id"], "batch-one")
         case.assertEqual(len(json.loads(tool["content"])["sources"]), 6)
-        case.assertEqual([e["content"] for e in events if e["type"] == "token"], [reply.content])
+        case.assertEqual([e["content"] for e in events if e["type"] == "token"], ["Luna grounded ", "answer."])
 
 
 class LunaTransportTests(unittest.TestCase):
