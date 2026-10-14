@@ -101,7 +101,8 @@ uv run python -m backend.phone_probe
 This synthesizes a short hostel-fee question and checks that Sarvam recognizes it through the same 8 kHz mu-law settings used for calls.
 It prints sanitized stages and format/results, using a small amount of Sarvam API usage.
 Phone input is retained for at most twenty seconds and synthesis output for at most ten seconds per packet.
-Playback uses short marked segments with approximately 200 ms outstanding audio; a temporary pause can let that short tail finish before an acknowledgment resumes the answer.
+Playback uses short marked segments with at most approximately 800 ms outstanding audio to bridge playback acknowledgments over international network round trips.
+An optional temporary pause stops new audio while the queued tail finishes before an acknowledgment resumes the answer.
 Real interruptions clear buffered audio and cancel the owned answer.
 Speech recognition startup is limited to twenty seconds, each speech-synthesis connection has a fifteen-second deadline, and calls are limited to `TWILIO_MAX_CALL_SECONDS` (600 by default).
 Hangup, provider failure, deadline, and shutdown close the call session and remove its in-memory conversation checkpoints.
