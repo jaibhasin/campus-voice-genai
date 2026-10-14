@@ -141,6 +141,7 @@ async def health():
         "status": "ok",
         "agent": agent_instance is not None,
         "sarvam": sarvam_client is not None,
+        "telephony": getattr(app.state, "telephony", None) is not None,
         "name": "Scout API",
     }
 
