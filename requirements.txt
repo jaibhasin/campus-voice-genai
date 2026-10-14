@@ -40,3 +40,6 @@ python-multipart
 
 # Sarvam AI voice (STT/TTS) SDK
 sarvamai
+
+# Programmable Voice signatures, TwiML, and outbound call creation.
+twilio>=9,<10
