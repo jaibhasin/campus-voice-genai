@@ -177,7 +177,8 @@ Therefore, mapping Scout's temporary pause directly to `clear` would lose audio 
 [Source: mark and clear semantics](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
 
 Use one serialized outbound writer per call, and divide speech into small raw-audio frames.
-Start with approximately 20 ms media frames, marks at approximately 100 ms boundaries, and at most approximately 200 ms outstanding playback.
+Use approximately 20 ms media frames, marks at approximately 100 ms boundaries, and at most approximately 800 ms outstanding playback.
+The window must cover playback time and the return trip of playback acknowledgments; a 200 ms window can starve audio over international network routes.
 These are engineering tuning values, not Twilio guarantees; measure them over actual calls.
 Bound local audio retention by both bytes and duration and apply synthesis/generation backpressure.
 Keep the inbound audio reader running independently of outbound pacing and classifier work.
