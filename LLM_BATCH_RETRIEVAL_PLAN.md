@@ -70,7 +70,7 @@ Switching providers keeps the conversation but resets retrieved evidence on the 
 `backend/main.py` accepts `llm_batch` for chat, uploaded voice chat, and the voice WebSocket.
 `frontend/src/components/ProviderSelect.jsx` exposes the new option below Call Scout.
 Selection stays disabled during an active response or call and applies to the next call.
-Decisions remains the page's default while latency and source coverage are evaluated.
+The frontend starts with `llm_batch` selected; chat and voice API requests independently default to `decisions` when no provider is supplied.
 The optional Jev interruption classifier continues to manage overlapping speech under its existing configuration.
 
 ## Limits and lifecycle

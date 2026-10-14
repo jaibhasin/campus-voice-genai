@@ -65,12 +65,12 @@ Deploy the frontend and backend together because voice calls require protocol ve
 
 OpenAI Decisions (`openai/gpt-6-luna-decisions` through OpenRouter's `POST /api/alpha/decisions`) navigates local PageIndex documents and selects source text by default; the answer LLM responds using that evidence.
 Use the compact dropdown below Call Scout to select Decisions, Jev, or Normal LLM (GPT-6 Luna).
-The selection applies to text chat and new voice calls, stays fixed during a reply or call, and resets to Decisions on a page refresh.
+The selection applies to text chat and new voice calls, stays fixed during a reply or call, and starts at Normal LLM (GPT-6 Luna) on a page load.
 Switching providers preserves the current conversation.
 Chat and voice retain thread-scoped conversation context, with fresh source evidence for each question.
 Retrieval is bounded by round, time, and request-size limits; incomplete retrieval is passed to the answer LLM as a limitation.
 `RETRIEVAL_MAX_ROUNDS`, `RETRIEVAL_MAX_SECONDS`, and `RETRIEVAL_REQUEST_TIMEOUT` configure both providers; the legacy `JEV_*` limit variables remain supported.
-Chat requests accept `retrieval_provider: "decisions" | "jev" | "llm_batch"`, defaulting to `"decisions"`.
+Chat requests accept `retrieval_provider: "decisions" | "jev" | "llm_batch"`; omitted values default to `"decisions"` at the API boundary.
 The voice WebSocket accepts the same values in its `retrieval_provider` query parameter.
 Unavailable providers report incomplete retrieval rather than silently switching providers.
 For standalone agents, `RETRIEVAL_MODE=jev` selects Jev and `RETRIEVAL_MODE=llm` keeps the original LLM tool-selection baseline.
