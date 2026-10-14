@@ -20,7 +20,7 @@ export default function Home() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isCallOpen, setIsCallOpen] = useState(false);
-  const [retrievalProvider, setRetrievalProvider] = useState("decisions");
+  const [retrievalProvider, setRetrievalProvider] = useState("llm_batch");
   const abortRef = useRef(null);
 
   const sendMessage = useCallback(
