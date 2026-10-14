@@ -15,7 +15,7 @@ from sarvamai.types.realtime_end import RealtimeEnd
 from backend.voice_activity import CHECK_INS, VoiceActivity
 from backend.voice_interruption import VoiceInterruptionClassifier
 from backend.voice_language import VoiceLanguage
-from backend.voice_response import PROTOCOL_VERSION, VoiceResponse, pcm16_to_wav, synthesize_response
+from backend.voice_response import PROTOCOL_VERSION, VoiceResponse, synthesize_response
 
 
 sarvam_client = AsyncSarvamAI(api_subscription_key=os.getenv("SARVAM_API_KEY", ""))

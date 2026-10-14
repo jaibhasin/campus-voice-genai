@@ -17,7 +17,7 @@ from sarvamai.types.realtime_error import RealtimeError
 
 from backend import voice_pipeline as voice_pipeline_module
 from backend.voice_activity import CHECK_INS, VoiceActivity
-from backend.voice_interruption import InterruptionDecision
+from backend.voice_interruption import InterruptionDecision, VoiceInterruptionClassifier
 from backend.voice_response import VoiceResponse
 
 
@@ -650,6 +650,34 @@ class VoiceInterruptionPipelineTests(unittest.IsolatedAsyncioTestCase):
         context = self.classifier.classify.await_args.args[1]
         self.assertIsNone(context.get("answer_requested"))
         self.assertEqual(context["assistant_text"], self.agent.text)
+
+    async def test_generated_follow_up_does_not_override_classifier_acknowledgment(self):
+        client = AsyncMock()
+        client.adecide.return_value = {
+            "answers": {"action": {"type": "choice", "choice": "acknowledgment"}},
+        }
+        classifier = VoiceInterruptionClassifier(client=client)
+        self.classifier.classify = AsyncMock(wraps=classifier.classify)
+        self.agent.text = "Scholarships cover tuition. Which programme are you interested in?"
+        await self.start()
+        await self.utterance("Ok.")
+        await self.browser.event("acknowledgment", 1)
+        self.assertIsNone(client.adecide.await_args.args[0]["answer_requested"])
+        self.assertEqual(len(self.agent.calls), 1)
+        self.assertFalse(any(event["type"] == "response_cancelled" for event in self.browser.sent_json))
+
+    async def test_new_speech_after_empty_watchdog_clears_old_overlap(self):
+        await self.start()
+        await self.stt.event("RealtimeVadSpeechStart")
+        await self.browser.event("playback_pause", 1)
+        await self.stt.event("RealtimeVadSpeechEnd")
+        await self.browser.event("playback_resume", 1)
+        await self.browser.command("playback_done", response_id=1)
+        await self.browser_barrier()
+        await self.utterance("What are the admissions dates?")
+        await self.browser.event("tts_done", 2)
+        self.classifier.classify.assert_not_awaited()
+        self.assertEqual(self.agent.calls[-1][0], "What are the admissions dates?")
 
     async def test_short_acknowledgments_keep_playing_during_slow_classification(self):
         requested = asyncio.Event()
