@@ -12,7 +12,7 @@ from backend.voice_transport import PHONE_AUDIO, VoiceInput
 logger = logging.getLogger(__name__)
 FRAME_BYTES = 160  # 20 ms at 8 kHz, 8-bit mono.
 SEGMENT_BYTES = 800  # One mark per 100 ms.
-MAX_PENDING_SEGMENTS = 2
+MAX_PENDING_SEGMENTS = 8  # 800 ms bridges playback acknowledgments over international RTT.
 MAX_AUDIO_PACKET_BYTES = 80000  # Ten seconds retained at most per provider packet.
 
 

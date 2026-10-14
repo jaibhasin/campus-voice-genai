@@ -22,7 +22,11 @@ from twilio.request_validator import RequestValidator
 from backend.test_voice_pipeline import FakeSarvamClient, FakeTtsSocket, QueueStt
 from backend.twilio_routes import TelephonyRuntime, configure_telephony, router
 from backend.twilio_security import CallRegistry, TwilioSettings, valid_signature
-from backend.twilio_transport import TwilioVoiceTransport
+from backend.twilio_transport import (
+    MAX_PENDING_SEGMENTS,
+    SEGMENT_BYTES,
+    TwilioVoiceTransport,
+)
 from backend.voice_transport import VoiceAudioChunk, VoiceInput
 
 SETTINGS = TwilioSettings(
@@ -157,21 +161,30 @@ class TwilioPlaybackTests(unittest.IsolatedAsyncioTestCase):
                 return message["mark"]["name"]
 
     async def test_playback_is_bounded_and_final_mark_reports_audible_completion(self):
-        audio = b"\xff" * 2400
+        audio = b"\xff" * (SEGMENT_BYTES * (MAX_PENDING_SEGMENTS + 1))
         sending = asyncio.create_task(self.transport.send_audio(VoiceAudioChunk(1, audio, "mulaw", 8000)))
-        first, second = await self.next_mark(), await self.next_mark()
+        initial = [await self.next_mark() for _ in range(MAX_PENDING_SEGMENTS)]
         self.assertFalse(sending.done())
-        self.assertEqual(len(self.transport.pending), 2)
-        self.feed("mark", mark={"name": first})
-        third = await self.next_mark()
+        self.assertEqual(len(self.transport.pending), MAX_PENDING_SEGMENTS)
+        self.feed("mark", mark={"name": initial[0]})
+        last = await self.next_mark()
         await sending
         await self.transport.send_event({"type": "tts_done", "response_id": 1})
         final = await self.next_mark()
         self.assertTrue(self.transport.inputs.empty())
-        for name in [second, third, final]:
+        for name in [*initial[1:], last, final]:
             self.feed("mark", mark={"name": name})
         done = await asyncio.wait_for(self.transport.receive(), 1)
         self.assertEqual(done.data, {"type": "playback_done", "response_id": 1})
+        payload = b"".join(base64.b64decode(m["media"]["payload"]) for m in self.socket.history if m["event"] == "media")
+        self.assertEqual(payload, audio)
+
+    async def test_audio_window_bridges_network_delay_before_playback_marks_return(self):
+        # Four 100 ms segments cover a 240 ms round trip plus playback of the first mark.
+        # No marks have returned yet; the old two-segment window stalls here.
+        audio = b"\xff" * 3200
+        await asyncio.wait_for(self.transport.send_audio(VoiceAudioChunk(1, audio, "mulaw", 8000)), 1)
+        self.assertEqual(len(self.transport.pending), 4)
         payload = b"".join(base64.b64decode(m["media"]["payload"]) for m in self.socket.history if m["event"] == "media")
         self.assertEqual(payload, audio)
 
@@ -185,7 +198,7 @@ class TwilioPlaybackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m["event"] for m in self.socket.history], ["media", "mark"])
 
     async def test_clear_marks_cannot_complete_successor_or_send_canceled_audio(self):
-        await self.transport.send_audio(VoiceAudioChunk(1, b"\xff" * 160, "mulaw", 8000))
+        await self.transport.send_audio(VoiceAudioChunk(1, b"\xff" * (SEGMENT_BYTES * MAX_PENDING_SEGMENTS), "mulaw", 8000))
         await self.transport.send_event({"type": "tts_done", "response_id": 1})
         old = list(self.transport.pending)
         await self.transport.send_event({"type": "response_cancelled", "response_id": 1})
