@@ -1,6 +1,7 @@
 # Scout phone call integration plan
 
-Status: proposed; planning and documentation only.
+Status: implemented with local protocol, regression, and live Sarvam codec verification.
+Real Twilio calls and the public tunnel remain unverified until account credentials and streaming access are configured.
 Research date: 14 October 2026.
 User context: local application, existing free Twilio account, caller in India, inbound and outbound calls requested.
 
