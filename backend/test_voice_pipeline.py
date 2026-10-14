@@ -18,7 +18,7 @@ from sarvamai.types.realtime_error import RealtimeError
 from backend import voice_pipeline as voice_pipeline_module
 from backend.voice_activity import CHECK_INS, VoiceActivity
 from backend.voice_interruption import InterruptionDecision
-from backend.voice_response import VoiceResponse
+from backend.voice_response import VoiceResponse, pcm16_to_wav
 
 
 class FakeConnection:
@@ -410,7 +410,7 @@ class VoicePipelineConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn({"type": "agent_token", "response_id": 1, "content": "Hi there"}, browser.sent_json)
 
     async def test_wraps_each_pcm_chunk_as_playable_wav_for_streaming(self):
-        wav_header = b"RIFF" + (b"\x00" * 40)
+        wav_header = pcm16_to_wav(b"")
         pcm_audio = b"\x01\x02\x03\x04"
         tts_socket = FakeTtsSocket(events=[
             AudioOutput(data=AudioOutputData(
