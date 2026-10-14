@@ -6,13 +6,13 @@ from unittest.mock import Mock, patch
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from Agent.normal_llm import NormalLLMAgent
-from Agent.test_batch_pageindex import batch_store, paths_for
+from Agent.test_batch_pageindex import batch_store, paths_for, selection_for
 from Agent.test_graph import make_agent
 
 
 def query(paths, content=""):
     return AIMessageChunk(content=content, tool_call_chunks=[{
-        "name": "read_pageindex", "args": json.dumps({"paths": paths}),
+        "name": "read_pageindex", "args": json.dumps(selection_for(paths)),
         "id": "read-batch", "index": 0,
     }])
 

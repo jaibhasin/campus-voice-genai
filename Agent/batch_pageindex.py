@@ -9,17 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from .decision_tracing import _trace_inputs
 
 
-class SourcePath(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    branch_id: str
-    source_ids: list[str] = Field(min_length=1, max_length=6)
-
-
 class PageIndexRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    paths: list[SourcePath] = Field(min_length=1, max_length=3)
+    branch_ids: list[str] = Field(min_length=1, max_length=3)
+    source_ids: list[str] = Field(min_length=1, max_length=6)
 
 
 PAGEINDEX_TOOL = {
@@ -29,8 +23,9 @@ PAGEINDEX_TOOL = {
         "description": (
             "Read actual college source text before stating TIET facts. Select source IDs "
             "directly from any tree depth under up to three catalog branch IDs in ONE "
-            "request. Each branch must be an outline ancestor of its sources. Select at "
-            "most six distinct sources total, covering relevant conditions and exceptions. "
+            "request. Put up to three outlines in branch_ids and ALL selected sources in "
+            "ONE source_ids list of at most six distinct IDs TOTAL, covering relevant "
+            "conditions and exceptions. Each source must descend from a selected branch. "
             "You may select several sources per branch. Catalog titles and summaries are "
             "navigation hints, not factual evidence. Do not fetch already-read sources."
         ),
@@ -77,28 +72,29 @@ class BatchPageIndex:
             raise ValueError("PageIndex catalog exceeds the normal LLM catalog limit")
 
     @traceable(name="read_pageindex", run_type="tool", process_inputs=_trace_inputs)
-    def read(self, paths, seen, byte_budget):
-        request = PageIndexRequest.model_validate({"paths": paths})
-        ids = [source for path in request.paths for source in path.source_ids]
-        if len(ids) > 6 or len(ids) != len(set(ids)):
+    def read(self, selection, seen, byte_budget):
+        request = PageIndexRequest.model_validate(selection)
+        ids = request.source_ids
+        if len(ids) != len(set(ids)):
             raise ValueError("Select at most six distinct PageIndex sources")
-        for path in request.paths:
-            branch = self.store.targets.get(path.branch_id)
+        if len(request.branch_ids) != len(set(request.branch_ids)):
+            raise ValueError("Select distinct PageIndex branches")
+        paths = {branch_id: [] for branch_id in request.branch_ids}
+        for branch_id in paths:
+            branch = self.store.targets.get(branch_id)
             if branch is None or branch.kind != "outline":
                 raise ValueError("PageIndex branch must be a catalog outline")
-            for source_id in path.source_ids:
-                source = self.store.targets.get(source_id)
-                if (
-                    source is None or source.kind != "source"
-                    or path.branch_id not in self.ancestors[source_id]
-                    or source_id in seen
-                ):
-                    raise ValueError("PageIndex source must be unread and belong to its branch")
+        for source_id in ids:
+            source = self.store.targets.get(source_id)
+            branch_id = next((key for key in paths if key in self.ancestors.get(source_id, ())), None)
+            if source is None or source.kind != "source" or branch_id is None or source_id in seen:
+                raise ValueError("PageIndex source must be unread and belong to its branch")
+            paths[branch_id].append(source_id)
         # Give each selected branch a chance before taking a second source from one.
         ordered = [
-            path.source_ids[index]
-            for index in range(max(len(path.source_ids) for path in request.paths))
-            for path in request.paths if index < len(path.source_ids)
+            sources[index]
+            for index in range(max(len(sources) for sources in paths.values()))
+            for sources in paths.values() if index < len(sources)
         ]
         evidence, omitted = [], []
         for source_id in ordered:

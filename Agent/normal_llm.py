@@ -110,7 +110,7 @@ class NormalLLMAgent:
                     if not valid_batch or call["name"] != "read_pageindex":
                         raise ValueError("Use one read_pageindex batch per call")
                     allowance = self.evidence_limit - len(compact_json(result.evidence).encode("utf-8"))
-                    batch = self.index.read(call["args"].get("paths"), seen, max(0, allowance))
+                    batch = self.index.read(call["args"], seen, max(0, allowance))
                     result.evidence.extend(batch.evidence)
                     for source in batch.evidence:
                         seen.add(source["source_id"])
@@ -124,7 +124,7 @@ class NormalLLMAgent:
                     result.history.append({
                         "round": turn + 1, "action": "read_sources",
                         "source_ids": [source["source_id"] for source in batch.evidence],
-                        "paths": call["args"]["paths"], "omitted": batch.omitted,
+                        "branch_ids": call["args"]["branch_ids"], "omitted": batch.omitted,
                     })
                 except (ValueError, TypeError, AttributeError):
                     result.limitation = "The source request was invalid; no sources were read for that request."

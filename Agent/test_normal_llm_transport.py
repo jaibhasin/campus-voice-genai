@@ -7,7 +7,7 @@ import httpx
 
 from Agent.models import OpenRouterChatOpenAI
 from Agent.normal_llm import NormalLLMAgent
-from Agent.test_batch_pageindex import batch_store, paths_for
+from Agent.test_batch_pageindex import batch_store, paths_for, selection_for
 from Agent.test_tracing import capture_traces, named
 
 
@@ -31,9 +31,7 @@ class LunaTransportFixture:
         if len(self.requests) == 1:
             delta = {"tool_calls": [{
                 "id": "batch-one", "index": 0, "type": "function",
-                "function": {"name": "read_pageindex", "arguments": json.dumps({
-                    "paths": paths_for(self.store),
-                })},
+                "function": {"name": "read_pageindex", "arguments": json.dumps(selection_for(paths_for(self.store)))},
             }]}
             finish = "tool_calls"
         else:
